@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>一起看 - B站同步观影</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- WebSocket relay via Cloudflare Worker -->
   <style>
     /* ========== Reset & Base ========== */
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -789,34 +789,33 @@
 
 <script>
 // ============================================================
-// 一起看 - Main Application (v2 - Fixed P2P sync)
+// 一起看 - Main Application (v3 - WebSocket relay)
 // ============================================================
 
 ;(function() {
   'use strict';
 
   // ===== Config =====
+  const WS_URL = 'wss://yiqikan-relay.kuribohg.workers.dev/ws/';
   const DANMAKU_SPEED = 8;
   const DANMAKU_MAX = 60;
-  const CONNECT_RETRY_MAX = 5;
-  const CONNECT_RETRY_DELAY = 2000;
-  const HEARTBEAT_INTERVAL = 5000;
+  const RECONNECT_MAX = 10;
+  const RECONNECT_DELAY = 2000;
+  const HEARTBEAT_INTERVAL = 15000;
 
   // ===== State =====
   const state = {
     nickname: '',
-    peerId: '',
+    sessionId: '',
     roomId: '',
     isHost: false,
-    peer: null,
-    connections: new Map(),
-    hostConn: null,
+    ws: null,
     currentBvid: '',
     danmakuEnabled: true,
     danmakuCount: 0,
-    members: new Map(),
-    connectRetries: 0,
+    reconnectAttempts: 0,
     heartbeatTimer: null,
+    connected: false,
   };
 
   // ===== DOM Refs =====
@@ -920,7 +919,7 @@
     els.videoUrlInput.value = `https://www.bilibili.com/video/${bvid}`;
 
     if (!fromSync) {
-      broadcast({ type: 'video', bvid });
+      wsSend({ type: 'video', bvid });
       addSystemMessage(`正在播放: ${bvid}`);
     }
   }
@@ -956,7 +955,7 @@
     });
 
     if (!fromSync) {
-      broadcast({ type: 'danmaku', text, color });
+      wsSend({ type: 'danmaku', text, color });
     }
   }
 
@@ -989,7 +988,7 @@
     const text = els.chatInput.value.trim();
     if (!text) return;
     addChatMessage(state.nickname, text);
-    broadcast({ type: 'chat', nick: state.nickname, text });
+    wsSend({ type: 'chat', text });
     els.chatInput.value = '';
   }
 
@@ -1000,23 +999,9 @@
   }
 
   // ===== Members =====
-  function updateMembers() {
-    const members = [{ id: state.peerId, nickname: state.nickname, isHost: state.isHost }];
-
-    if (state.isHost) {
-      for (const [id, info] of state.connections) {
-        members.push({ id, nickname: info.nickname || '未知', isHost: false });
-      }
-    } else {
-      for (const [id, info] of state.members) {
-        if (id !== state.peerId) {
-          members.push(info);
-        }
-      }
-    }
-
-    els.memberCount.textContent = members.length;
-    els.membersList.innerHTML = members.map(m => `
+  function updateMembersList(list) {
+    els.memberCount.textContent = list.length;
+    els.membersList.innerHTML = list.map(m => `
       <div class="member-item">
         <div class="member-avatar">${(m.nickname || '?')[0].toUpperCase()}</div>
         <span class="member-name">${escapeHtml(m.nickname || '未知')}</span>
@@ -1025,292 +1010,118 @@
     `).join('');
   }
 
-  // ===== PeerJS / Networking =====
-  function initPeer(roomId, isHost) {
-    state.isHost = isHost;
+  // ===== WebSocket Networking =====
+  function connectRoom(roomId) {
     state.roomId = roomId;
-    state.connectRetries = 0;
+    state.reconnectAttempts = 0;
+    doConnect();
+  }
 
-    const peerId = isHost ? `yqk-${roomId}` : `yqk-${roomId}-${Date.now().toString(36)}`;
-
-    log('Peer', `Initializing as ${isHost ? 'HOST' : 'GUEST'}, peerId=${peerId}`);
+  function doConnect() {
+    const url = WS_URL + state.roomId;
+    log('WS', `Connecting to ${url} (attempt ${state.reconnectAttempts + 1})`);
     setStatus('connecting', '正在连接...');
 
-    state.peer = new Peer(peerId, {
-      debug: 2,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' },
-          {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-          {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject',
-          },
-        ]
-      }
-    });
-
-    state.peer.on('open', (id) => {
-      state.peerId = id;
-      log('Peer', 'Connected to signaling server, id:', id);
-      setStatus('connected', isHost ? '房间已创建' : '已连接信令服务器');
-      els.roomIdDisplay.textContent = roomId;
-      updateMembers();
-
-      if (!isHost) {
-        connectToHost(roomId);
-      } else {
-        startHeartbeat();
-      }
-    });
-
-    state.peer.on('connection', (conn) => {
-      log('Peer', 'Incoming connection from:', conn.peer);
-      if (isHost) {
-        setupHostConnection(conn);
-      }
-    });
-
-    state.peer.on('error', (err) => {
-      log('Peer', 'Error:', err.type, err.message || '');
-
-      if (err.type === 'unavailable-id') {
-        toast('房间ID已被占用，请重试', 'error');
-        setStatus('error', '房间ID冲突');
-      } else if (err.type === 'peer-unavailable') {
-        log('Peer', 'peer-unavailable, will retry via retryConnect');
-        if (!isHost) {
-          retryConnect(roomId);
-        } else {
-          toast('目标不可达', 'error');
-        }
-      } else if (err.type === 'network') {
-        toast('网络连接异常', 'error');
-        setStatus('error', '网络异常');
-      } else if (err.type === 'server-error') {
-        toast('信令服务器异常，请稍后重试', 'error');
-        setStatus('error', '服务器异常');
-      } else {
-        toast(`连接错误: ${err.type}`, 'error');
-        setStatus('error', err.type);
-      }
-    });
-
-    state.peer.on('disconnected', () => {
-      log('Peer', 'Disconnected from signaling server');
-      setStatus('connecting', '连接断开，正在重连...');
-      setTimeout(() => {
-        if (state.peer && !state.peer.destroyed) {
-          log('Peer', 'Attempting reconnect...');
-          state.peer.reconnect();
-        }
-      }, 3000);
-    });
-
-    state.peer.on('close', () => {
-      log('Peer', 'Peer destroyed');
-      setStatus('error', '连接已关闭');
-      stopHeartbeat();
-    });
-  }
-
-  // --- Host: handle incoming guest connection ---
-  function setupHostConnection(conn) {
-    // Register data/close listeners BEFORE open fires (critical fix)
-    conn.on('data', (data) => {
-      log('Host', 'Data from', conn.peer, ':', data.type);
-      handleMessage(data, conn);
-    });
-
-    conn.on('close', () => {
-      const info = state.connections.get(conn.peer);
-      const nick = info ? info.nickname : '未知';
-      log('Host', 'Peer disconnected:', conn.peer, nick);
-      state.connections.delete(conn.peer);
-      addSystemMessage(`${nick} 离开了房间`);
-      updateMembers();
-      broadcastMemberList();
-    });
-
-    conn.on('error', (err) => {
-      log('Host', 'Connection error with', conn.peer, ':', err);
-    });
-
-    conn.on('open', () => {
-      log('Host', 'Connection opened with:', conn.peer);
-      state.connections.set(conn.peer, { conn, nickname: '未知' });
-
-      // Send current video state immediately
-      if (state.currentBvid) {
-        log('Host', 'Sending current video to new peer:', state.currentBvid);
-        conn.send({ type: 'video', bvid: state.currentBvid });
-      }
-
-      // Send member list to new peer
-      broadcastMemberList();
-      updateMembers();
-    });
-  }
-
-  // --- Guest: connect to host ---
-  function connectToHost(roomId) {
-    const hostPeerId = `yqk-${roomId}`;
-    log('Guest', 'Connecting to host:', hostPeerId, `(attempt ${state.connectRetries + 1})`);
-    setStatus('connecting', '正在连接房间...');
-
-    let conn;
     try {
-      conn = state.peer.connect(hostPeerId, {
-        reliable: true,
-      });
+      state.ws = new WebSocket(url);
     } catch(e) {
-      log('Guest', 'peer.connect() threw:', e);
-    }
-
-    if (!conn) {
-      log('Guest', 'Failed to create connection object');
-      retryConnect(roomId);
+      log('WS', 'WebSocket constructor error:', e);
+      scheduleReconnect();
       return;
     }
 
-    state.hostConn = conn;
-    let opened = false;
+    state.ws.onopen = () => {
+      log('WS', 'Connected!');
+      state.connected = true;
+      state.reconnectAttempts = 0;
+      setStatus('connected', '已连接');
+      els.roomIdDisplay.textContent = state.roomId;
 
-    // Timeout: if open doesn't fire within 15s, retry
-    const openTimeout = setTimeout(() => {
-      if (!opened) {
-        log('Guest', 'Connection open timeout (15s), retrying...');
-        try { conn.close(); } catch(e) {}
-        retryConnect(roomId);
-      }
-    }, 15000);
-
-    conn.on('data', (data) => {
-      log('Guest', 'Data from host:', data.type);
-      handleMessage(data, conn);
-    });
-
-    conn.on('open', () => {
-      opened = true;
-      clearTimeout(openTimeout);
-      log('Guest', 'Connected to host successfully!');
-      state.connectRetries = 0;
-      setStatus('connected', '已连接到房间');
-      toast('成功加入房间!');
-      conn.send({ type: 'join', nickname: state.nickname });
+      // Send join message
+      wsSend({ type: 'join', nickname: state.nickname });
       startHeartbeat();
-    });
+    };
 
-    conn.on('close', () => {
-      clearTimeout(openTimeout);
-      log('Guest', 'Connection to host closed');
-      setStatus('error', '与房主断开连接');
-      toast('与房主断开连接', 'warning');
-      stopHeartbeat();
-    });
-
-    conn.on('error', (err) => {
-      clearTimeout(openTimeout);
-      log('Guest', 'Connection error:', err);
-      if (!opened) {
-        retryConnect(roomId);
+    state.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleMessage(data);
+      } catch(e) {
+        log('WS', 'Failed to parse message:', e);
       }
-    });
+    };
+
+    state.ws.onclose = (event) => {
+      log('WS', `Closed: code=${event.code} reason=${event.reason}`);
+      state.connected = false;
+      stopHeartbeat();
+
+      if (state.roomId) {
+        setStatus('connecting', '连接断开，正在重连...');
+        scheduleReconnect();
+      }
+    };
+
+    state.ws.onerror = (event) => {
+      log('WS', 'Error:', event);
+    };
   }
 
-  function retryConnect(roomId) {
-    if (state.connectRetries < CONNECT_RETRY_MAX) {
-      state.connectRetries++;
-      const delay = CONNECT_RETRY_DELAY * state.connectRetries;
-      log('Guest', `Retry ${state.connectRetries}/${CONNECT_RETRY_MAX} in ${delay}ms`);
-      setStatus('connecting', `正在重连 (${state.connectRetries}/${CONNECT_RETRY_MAX})...`);
-      setTimeout(() => {
-        if (state.peer && !state.peer.destroyed) {
-          connectToHost(roomId);
-        }
-      }, delay);
-    } else {
-      toast('无法连接到房间，请检查房间ID或刷新重试', 'error');
+  function scheduleReconnect() {
+    if (state.reconnectAttempts >= RECONNECT_MAX) {
+      toast('无法连接服务器，请刷新重试', 'error');
       setStatus('error', '连接失败');
+      return;
+    }
+    state.reconnectAttempts++;
+    const delay = Math.min(RECONNECT_DELAY * state.reconnectAttempts, 10000);
+    log('WS', `Reconnect in ${delay}ms (${state.reconnectAttempts}/${RECONNECT_MAX})`);
+    setTimeout(() => {
+      if (state.roomId) doConnect();
+    }, delay);
+  }
+
+  function wsSend(data) {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify(data));
     }
   }
 
   // --- Message handler ---
-  function handleMessage(data, conn) {
+  function handleMessage(data) {
     if (!data || !data.type) return;
-
-    // Ignore heartbeat silently
-    if (data.type === 'ping') {
-      try { conn.send({ type: 'pong' }); } catch(e) {}
-      return;
-    }
     if (data.type === 'pong') return;
 
+    log('MSG', data.type, data);
+
     switch (data.type) {
-      case 'join':
-        if (state.isHost) {
-          const info = state.connections.get(conn.peer);
-          if (info) {
-            info.nickname = data.nickname;
-          }
-          addSystemMessage(`${data.nickname} 加入了房间`);
-          toast(`${data.nickname} 加入了房间`);
-          updateMembers();
-          broadcastMemberList();
+      case 'welcome':
+        // Server tells us our session info and current state
+        state.sessionId = data.sessionId;
+        state.isHost = data.isHost;
+        log('WS', `Session: ${data.sessionId}, isHost: ${data.isHost}`);
+        if (data.currentBvid) {
+          loadVideo(data.currentBvid, true);
+          addSystemMessage(`正在播放: ${data.currentBvid}`);
         }
+        toast(data.isHost ? '房间创建成功！' : '成功加入房间!');
         break;
 
       case 'video':
         loadVideo(data.bvid, true);
-        addSystemMessage(`房主切换了视频: ${data.bvid}`);
+        addSystemMessage(`视频已切换: ${data.bvid}`);
         break;
 
       case 'danmaku':
         fireDanmaku(data.text, data.color, true);
-        // Host relays danmaku to other guests
-        if (state.isHost) {
-          broadcastExcept(conn.peer, data);
-        }
         break;
 
       case 'chat':
         addChatMessage(data.nick, data.text);
-        if (state.isHost) {
-          broadcastExcept(conn.peer, data);
-        }
         break;
 
       case 'members':
-        state.members.clear();
-        data.list.forEach(m => state.members.set(m.id, m));
-        updateMembers();
-        break;
-
-      case 'nick_change':
-        if (state.isHost) {
-          const info = state.connections.get(conn.peer);
-          if (info) {
-            const oldNick = info.nickname;
-            info.nickname = data.nickname;
-            addSystemMessage(`${oldNick} 改名为 ${data.nickname}`);
-            broadcast({ type: 'chat_system', text: `${oldNick} 改名为 ${data.nickname}` });
-            updateMembers();
-            broadcastMemberList();
-          }
-        }
+        updateMembersList(data.list);
         break;
 
       case 'chat_system':
@@ -1319,76 +1130,11 @@
     }
   }
 
-  // --- Broadcast ---
-  function broadcast(data) {
-    if (state.isHost) {
-      for (const [id, info] of state.connections) {
-        try {
-          if (info.conn && info.conn.open) {
-            info.conn.send(data);
-          }
-        } catch(e) {
-          log('Broadcast', 'Failed to send to', id, e.message);
-        }
-      }
-    } else if (state.hostConn && state.hostConn.open) {
-      try { state.hostConn.send(data); } catch(e) {
-        log('Broadcast', 'Failed to send to host', e.message);
-      }
-    }
-  }
-
-  function broadcastExcept(excludePeerId, data) {
-    if (!state.isHost) return;
-    for (const [id, info] of state.connections) {
-      if (id !== excludePeerId) {
-        try {
-          if (info.conn && info.conn.open) {
-            info.conn.send(data);
-          }
-        } catch(e) {}
-      }
-    }
-  }
-
-  function broadcastMemberList() {
-    if (!state.isHost) return;
-    const list = [{ id: state.peerId, nickname: state.nickname, isHost: true }];
-    for (const [id, info] of state.connections) {
-      list.push({ id, nickname: info.nickname, isHost: false });
-    }
-    log('Host', 'Broadcasting member list:', list.length, 'members');
-    broadcast({ type: 'members', list });
-  }
-
   // --- Heartbeat ---
   function startHeartbeat() {
     stopHeartbeat();
     state.heartbeatTimer = setInterval(() => {
-      if (state.isHost) {
-        // Host pings all guests
-        for (const [id, info] of state.connections) {
-          try {
-            if (info.conn && info.conn.open) {
-              info.conn.send({ type: 'ping' });
-            } else {
-              // Connection dead, clean up
-              const nick = info.nickname || '未知';
-              state.connections.delete(id);
-              addSystemMessage(`${nick} 已断开`);
-              updateMembers();
-              broadcastMemberList();
-            }
-          } catch(e) {
-            state.connections.delete(id);
-          }
-        }
-      } else {
-        // Guest pings host
-        if (state.hostConn && state.hostConn.open) {
-          try { state.hostConn.send({ type: 'ping' }); } catch(e) {}
-        }
-      }
+      wsSend({ type: 'ping' });
     }, HEARTBEAT_INTERVAL);
   }
 
@@ -1416,9 +1162,8 @@
       els.nicknameInput.value = nick;
 
       const roomId = generateRoomId();
-      initPeer(roomId, true);
+      connectRoom(roomId);
       els.welcomeOverlay.classList.add('hidden');
-      toast('房间创建成功！分享房间ID给朋友吧');
     });
 
     // Welcome - Show Join
@@ -1434,7 +1179,7 @@
       if (!roomId) { toast('请输入房间ID', 'warning'); return; }
       state.nickname = nick;
       els.nicknameInput.value = nick;
-      initPeer(roomId, false);
+      connectRoom(roomId);
       els.welcomeOverlay.classList.add('hidden');
     });
 
@@ -1528,16 +1273,8 @@
     els.nicknameInput.addEventListener('change', () => {
       const newNick = els.nicknameInput.value.trim();
       if (!newNick || newNick === state.nickname) return;
-      const oldNick = state.nickname;
       state.nickname = newNick;
-      if (state.isHost) {
-        addSystemMessage(`${oldNick} 改名为 ${newNick}`);
-        broadcast({ type: 'chat_system', text: `${oldNick} 改名为 ${newNick}` });
-        updateMembers();
-        broadcastMemberList();
-      } else {
-        broadcast({ type: 'nick_change', nickname: newNick });
-      }
+      wsSend({ type: 'nick_change', nickname: newNick });
     });
 
     // Check URL hash for room invitation
