@@ -1262,11 +1262,7 @@
     els.btnShare.addEventListener('click', () => {
       if (!state.roomId) { toast('请先创建或加入房间', 'warning'); return; }
       const url = `${location.origin}${location.pathname}#room=${state.roomId}`;
-      if (navigator.share) {
-        navigator.share({ title: '一起看', text: '来一起看B站视频吧！', url });
-      } else {
-        navigator.clipboard.writeText(url).then(() => toast('分享链接已复制到剪贴板'));
-      }
+      navigator.clipboard.writeText(url).then(() => toast('链接已复制到剪贴板'));
     });
 
     // Nickname change
