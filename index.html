@@ -1,0 +1,1376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>一起看 - B站同步观影</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <style>
+    /* ========== Reset & Base ========== */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0a0a0b;
+      --bg-secondary: #141416;
+      --bg-card: #1c1c1f;
+      --bg-input: #252528;
+      --border: #2a2a2e;
+      --text-primary: #e8e8ea;
+      --text-secondary: #9a9aa0;
+      --text-muted: #5a5a60;
+      --accent: #00aeec;
+      --accent-hover: #00c0ff;
+      --accent-dim: rgba(0, 174, 236, 0.15);
+      --pink: #fb7299;
+      --pink-hover: #fc8bab;
+      --success: #4caf50;
+      --warning: #ff9800;
+      --danger: #f44336;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+      --header-h: 56px;
+    }
+
+    html { font-size: 16px; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      overflow-x: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* ========== Scrollbar ========== */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ========== Header ========== */
+    .header {
+      position: fixed; top: 0; left: 0; right: 0;
+      height: var(--header-h);
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px;
+      z-index: 1000;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    .header-brand {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 1.1rem; font-weight: 700;
+      color: var(--accent);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .header-brand svg { width: 28px; height: 28px; }
+
+    .header-status {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.8rem; color: var(--text-secondary);
+    }
+
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.3s;
+    }
+    .status-dot.connected { background: var(--success); box-shadow: 0 0 8px var(--success); }
+
+    .header-actions { display: flex; gap: 8px; }
+
+    /* ========== Buttons ========== */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 6px; padding: 8px 16px;
+      border: none; border-radius: var(--radius-sm);
+      font-size: 0.85rem; font-weight: 500;
+      cursor: pointer; transition: all 0.2s;
+      color: var(--text-primary);
+      background: var(--bg-input);
+      white-space: nowrap;
+    }
+    .btn:hover { background: var(--border); }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-primary {
+      background: var(--accent); color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .btn-pink { background: var(--pink); color: #fff; }
+    .btn-pink:hover { background: var(--pink-hover); }
+
+    .btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+    .btn-icon { padding: 8px; width: 36px; height: 36px; }
+
+    /* ========== Main Layout ========== */
+    .main {
+      margin-top: var(--header-h);
+      display: flex;
+      height: calc(100vh - var(--header-h));
+    }
+
+    .player-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .sidebar {
+      width: 360px;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    /* ========== Video Container ========== */
+    .video-container {
+      position: relative;
+      width: 100%;
+      background: #000;
+      flex-shrink: 0;
+    }
+
+    .video-container::before {
+      content: '';
+      display: block;
+      padding-top: 56.25%;
+    }
+
+    .video-container iframe,
+    .video-placeholder {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      border: none;
+    }
+
+    .video-placeholder {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 16px;
+      background: linear-gradient(135deg, #0d0d0f 0%, #1a1a1e 100%);
+      color: var(--text-secondary);
+    }
+
+    .video-placeholder svg { width: 64px; height: 64px; opacity: 0.3; }
+    .video-placeholder p { font-size: 0.95rem; }
+
+    /* ========== Danmaku Overlay ========== */
+    .danmaku-layer {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 10;
+    }
+
+    .danmaku-item {
+      position: absolute;
+      white-space: nowrap;
+      font-size: 18px;
+      font-weight: 600;
+      color: #fff;
+      text-shadow: 1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8);
+      animation: danmaku-scroll linear forwards;
+      will-change: transform;
+      pointer-events: none;
+    }
+
+    @keyframes danmaku-scroll {
+      0%   { transform: translateX(0); }
+      100% { transform: translateX(calc(-100% - 100vw)); }
+    }
+
+    /* ========== Controls Bar ========== */
+    .controls-bar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+
+    .video-input-group {
+      flex: 1;
+      display: flex; gap: 8px;
+      min-width: 200px;
+    }
+
+    .video-input-group input {
+      flex: 1;
+      padding: 8px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .video-input-group input:focus { border-color: var(--accent); }
+    .video-input-group input::placeholder { color: var(--text-muted); }
+
+    .danmaku-toggle {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.8rem; color: var(--text-secondary);
+      cursor: pointer; user-select: none;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 36px; height: 20px;
+      background: var(--bg-input);
+      border-radius: 10px;
+      transition: background 0.3s;
+      cursor: pointer;
+    }
+    .toggle-switch.active { background: var(--accent); }
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 16px; height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.3s;
+    }
+    .toggle-switch.active::after { transform: translateX(16px); }
+
+    /* ========== Danmaku Input ========== */
+    .danmaku-input-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+    }
+
+    .danmaku-input-bar input {
+      flex: 1;
+      padding: 8px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .danmaku-input-bar input:focus { border-color: var(--pink); }
+    .danmaku-input-bar input::placeholder { color: var(--text-muted); }
+
+    .color-picker-wrapper {
+      position: relative;
+    }
+    .color-picker-wrapper input[type="color"] {
+      width: 28px; height: 28px;
+      border: 2px solid var(--border);
+      border-radius: 50%;
+      cursor: pointer;
+      background: none;
+      padding: 0;
+    }
+    .color-picker-wrapper input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+    .color-picker-wrapper input[type="color"]::-webkit-color-swatch { border: none; border-radius: 50%; }
+
+    /* ========== Sidebar Tabs ========== */
+    .sidebar-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-tab {
+      flex: 1;
+      padding: 14px 0;
+      text-align: center;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+      border-bottom: 2px solid transparent;
+      user-select: none;
+    }
+    .sidebar-tab:hover { color: var(--text-primary); }
+    .sidebar-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    /* ========== Chat Panel ========== */
+    .sidebar-content {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .chat-msg {
+      display: flex; gap: 8px;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      word-break: break-all;
+    }
+
+    .chat-msg .nick {
+      color: var(--accent);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+
+    .chat-msg .text { color: var(--text-primary); }
+
+    .chat-msg.system {
+      justify-content: center;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .chat-input-bar {
+      display: flex; gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--border);
+    }
+
+    .chat-input-bar input {
+      flex: 1;
+      padding: 8px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .chat-input-bar input:focus { border-color: var(--accent); }
+
+    /* ========== Room Panel ========== */
+    .room-panel {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .room-section {
+      background: var(--bg-card);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .room-section h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    .room-section p {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .room-id-display {
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    .room-id-display code {
+      flex: 1;
+      padding: 8px 12px;
+      background: var(--bg-primary);
+      border-radius: var(--radius-sm);
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      color: var(--accent);
+      word-break: break-all;
+    }
+
+    .room-input-group {
+      display: flex; gap: 8px;
+    }
+
+    .room-input-group input {
+      flex: 1;
+      padding: 8px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .room-input-group input:focus { border-color: var(--accent); }
+
+    .members-list {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+
+    .member-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 10px;
+      background: var(--bg-primary);
+      border-radius: var(--radius-sm);
+      font-size: 0.8rem;
+    }
+
+    .member-avatar {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--accent-dim);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; font-weight: 700;
+      color: var(--accent);
+    }
+
+    .member-name { flex: 1; }
+    .member-badge {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--accent-dim);
+      color: var(--accent);
+    }
+
+    .nickname-input {
+      padding: 8px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      outline: none;
+      width: 100%;
+    }
+    .nickname-input:focus { border-color: var(--accent); }
+
+    /* ========== Welcome Overlay ========== */
+    .welcome-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      z-index: 2000;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+    }
+
+    .welcome-card {
+      background: var(--bg-card);
+      border-radius: 16px;
+      padding: 32px;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: var(--shadow);
+      display: flex; flex-direction: column;
+      gap: 24px;
+      animation: fadeInUp 0.4s ease;
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .welcome-header {
+      text-align: center;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+
+    .welcome-header h1 {
+      font-size: 1.5rem;
+      background: linear-gradient(135deg, var(--accent), var(--pink));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .welcome-header p {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+
+    .welcome-form {
+      display: flex; flex-direction: column; gap: 16px;
+    }
+
+    .form-group {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+
+    .form-group label {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
+    .form-group input {
+      padding: 10px 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus { border-color: var(--accent); }
+
+    .welcome-actions {
+      display: flex; gap: 12px;
+    }
+    .welcome-actions .btn { flex: 1; padding: 12px; font-size: 0.9rem; }
+
+    .divider {
+      display: flex; align-items: center; gap: 12px;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1; height: 1px;
+      background: var(--border);
+    }
+
+    /* ========== Toast ========== */
+    .toast-container {
+      position: fixed;
+      top: calc(var(--header-h) + 12px);
+      right: 16px;
+      z-index: 3000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toast {
+      padding: 10px 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      color: var(--text-primary);
+      box-shadow: var(--shadow);
+      animation: toastIn 0.3s ease;
+      max-width: 320px;
+    }
+
+    .toast.success { border-left: 3px solid var(--success); }
+    .toast.warning { border-left: 3px solid var(--warning); }
+    .toast.error   { border-left: 3px solid var(--danger); }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    /* ========== Mobile Sidebar Toggle ========== */
+    .sidebar-toggle {
+      display: none;
+      position: fixed;
+      bottom: 20px; right: 20px;
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      z-index: 999;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(0,174,236,0.4);
+      font-size: 1.2rem;
+    }
+
+    /* ========== Responsive ========== */
+    @media (max-width: 768px) {
+      .header { padding: 0 12px; }
+      .header-brand span { display: none; }
+
+      .main { flex-direction: column; }
+
+      .sidebar {
+        position: fixed;
+        top: var(--header-h); left: 0; right: 0; bottom: 0;
+        width: 100%;
+        z-index: 900;
+        transform: translateX(100%);
+        transition: transform 0.3s ease;
+      }
+      .sidebar.open { transform: translateX(0); }
+
+      .sidebar-toggle { display: flex; align-items: center; justify-content: center; }
+
+      .player-area {
+        height: auto;
+        flex: none;
+      }
+
+      .controls-bar { padding: 8px 12px; }
+      .video-input-group { min-width: 0; }
+
+      .danmaku-input-bar { padding: 8px 12px; }
+
+      .danmaku-item { font-size: 14px; }
+
+      .welcome-card { padding: 24px; margin: 12px; }
+    }
+
+    @media (max-width: 480px) {
+      .controls-bar { gap: 8px; flex-direction: column; }
+      .video-input-group { width: 100%; }
+    }
+
+    /* ========== Utility ========== */
+    .hidden { display: none !important; }
+    .flex-center { display: flex; align-items: center; justify-content: center; }
+  </style>
+</head>
+<body>
+
+  <!-- ===== Header ===== -->
+  <header class="header">
+    <div class="header-brand" onclick="location.hash=''; location.reload();">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+      </svg>
+      <span>一起看</span>
+    </div>
+    <div class="header-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">未连接</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-sm" id="btnShare" title="分享房间链接">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        分享
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== Main ===== -->
+  <div class="main">
+    <!-- Player Area -->
+    <div class="player-area">
+      <div class="video-container" id="videoContainer">
+        <!-- Danmaku Layer -->
+        <div class="danmaku-layer" id="danmakuLayer"></div>
+        <!-- Placeholder -->
+        <div class="video-placeholder" id="videoPlaceholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <p>输入B站视频链接开始观看</p>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="controls-bar">
+        <div class="video-input-group">
+          <input type="text" id="videoUrlInput" placeholder="粘贴B站视频链接，如 https://www.bilibili.com/video/BVxxxxxxx">
+          <button class="btn btn-primary" id="btnLoadVideo">播放</button>
+        </div>
+        <label class="danmaku-toggle">
+          <div class="toggle-switch active" id="danmakuToggle"></div>
+          弹幕
+        </label>
+      </div>
+
+      <!-- Danmaku Input -->
+      <div class="danmaku-input-bar">
+        <div class="color-picker-wrapper">
+          <input type="color" id="danmakuColor" value="#ffffff" title="弹幕颜色">
+        </div>
+        <input type="text" id="danmakuInput" placeholder="发个友善的弹幕见证这一刻~" maxlength="100">
+        <button class="btn btn-pink btn-sm" id="btnSendDanmaku">发送</button>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-tabs">
+        <div class="sidebar-tab active" data-tab="chat">聊天</div>
+        <div class="sidebar-tab" data-tab="room">房间</div>
+      </div>
+      <div class="sidebar-content">
+        <!-- Chat Tab -->
+        <div class="tab-content" id="tabChat">
+          <div class="chat-messages" id="chatMessages">
+            <div class="chat-msg system"><span class="text">欢迎来到一起看~</span></div>
+          </div>
+          <div class="chat-input-bar">
+            <input type="text" id="chatInput" placeholder="发条消息..." maxlength="200">
+            <button class="btn btn-primary btn-sm" id="btnSendChat">发送</button>
+          </div>
+        </div>
+        <!-- Room Tab -->
+        <div class="tab-content hidden" id="tabRoom">
+          <div class="room-panel">
+            <div class="room-section">
+              <h3>你的昵称</h3>
+              <input class="nickname-input" id="nicknameInput" placeholder="修改昵称" maxlength="20">
+            </div>
+            <div class="room-section">
+              <h3>房间信息</h3>
+              <p>房间ID:</p>
+              <div class="room-id-display">
+                <code id="roomIdDisplay">--</code>
+                <button class="btn btn-sm" id="btnCopyRoomId">复制</button>
+              </div>
+            </div>
+            <div class="room-section">
+              <h3>在线成员 (<span id="memberCount">0</span>)</h3>
+              <div class="members-list" id="membersList"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Sidebar Toggle (Mobile) -->
+  <button class="sidebar-toggle" id="sidebarToggle">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+  </button>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- Welcome Overlay -->
+  <div class="welcome-overlay" id="welcomeOverlay">
+    <div class="welcome-card">
+      <div class="welcome-header">
+        <h1>一起看</h1>
+        <p>和朋友一起同步看B站视频</p>
+      </div>
+      <div class="welcome-form">
+        <div class="form-group">
+          <label>你的昵称</label>
+          <input type="text" id="welcomeNickname" placeholder="取个好听的名字" maxlength="20">
+        </div>
+        <div class="welcome-actions">
+          <button class="btn btn-primary" id="btnCreateRoom">创建房间</button>
+          <button class="btn" id="btnShowJoin">加入房间</button>
+        </div>
+        <div class="divider">或</div>
+        <div class="form-group hidden" id="joinRoomGroup">
+          <label>输入房间ID</label>
+          <div class="room-input-group">
+            <input type="text" id="joinRoomInput" placeholder="粘贴房间ID">
+            <button class="btn btn-primary" id="btnJoinRoom">加入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ============================================================
+// 一起看 - Main Application
+// ============================================================
+
+;(function() {
+  'use strict';
+
+  // ===== Config =====
+  const DANMAKU_SPEED = 8; // seconds to cross screen
+  const DANMAKU_MAX = 60;  // max danmaku on screen
+  const SYNC_INTERVAL = 3000; // sync every 3s
+
+  // ===== State =====
+  const state = {
+    nickname: '',
+    peerId: '',
+    roomId: '',
+    isHost: false,
+    peer: null,
+    connections: new Map(),  // peerId -> { conn, nickname }
+    hostConn: null,          // guest's connection to host
+    currentBvid: '',
+    danmakuEnabled: true,
+    danmakuCount: 0,
+    members: new Map(),
+  };
+
+  // ===== DOM Refs =====
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
+
+  const els = {
+    welcomeOverlay: $('#welcomeOverlay'),
+    welcomeNickname: $('#welcomeNickname'),
+    btnCreateRoom: $('#btnCreateRoom'),
+    btnShowJoin: $('#btnShowJoin'),
+    joinRoomGroup: $('#joinRoomGroup'),
+    joinRoomInput: $('#joinRoomInput'),
+    btnJoinRoom: $('#btnJoinRoom'),
+    videoContainer: $('#videoContainer'),
+    videoPlaceholder: $('#videoPlaceholder'),
+    danmakuLayer: $('#danmakuLayer'),
+    videoUrlInput: $('#videoUrlInput'),
+    btnLoadVideo: $('#btnLoadVideo'),
+    danmakuToggle: $('#danmakuToggle'),
+    danmakuInput: $('#danmakuInput'),
+    danmakuColor: $('#danmakuColor'),
+    btnSendDanmaku: $('#btnSendDanmaku'),
+    sidebar: $('#sidebar'),
+    sidebarToggle: $('#sidebarToggle'),
+    chatMessages: $('#chatMessages'),
+    chatInput: $('#chatInput'),
+    btnSendChat: $('#btnSendChat'),
+    roomIdDisplay: $('#roomIdDisplay'),
+    btnCopyRoomId: $('#btnCopyRoomId'),
+    memberCount: $('#memberCount'),
+    membersList: $('#membersList'),
+    nicknameInput: $('#nicknameInput'),
+    statusDot: $('#statusDot'),
+    statusText: $('#statusText'),
+    btnShare: $('#btnShare'),
+    toastContainer: $('#toastContainer'),
+  };
+
+  // ===== Toast =====
+  function toast(message, type = 'success') {
+    const t = document.createElement('div');
+    t.className = `toast ${type}`;
+    t.textContent = message;
+    els.toastContainer.appendChild(t);
+    setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; }, 2500);
+    setTimeout(() => t.remove(), 2800);
+  }
+
+  // ===== Utility =====
+  function generateRoomId() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let id = '';
+    for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)];
+    return id;
+  }
+
+  function parseBvid(input) {
+    input = input.trim();
+    // BV号直接输入
+    if (/^BV[\w]+$/i.test(input)) return input;
+    // bilibili URL
+    const m = input.match(/bilibili\.com\/video\/(BV[\w]+)/i);
+    if (m) return m[1];
+    // b23.tv 短链 - 提示用户
+    if (input.includes('b23.tv')) {
+      toast('请使用完整B站链接（非短链接）', 'warning');
+      return null;
+    }
+    // aid
+    const aidMatch = input.match(/bilibili\.com\/video\/av(\d+)/i);
+    if (aidMatch) {
+      toast('暂不支持av号，请使用BV号链接', 'warning');
+      return null;
+    }
+    return null;
+  }
+
+  function getEmbedUrl(bvid) {
+    return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0&autoplay=1`;
+  }
+
+  // ===== Video =====
+  function loadVideo(bvid, fromSync = false) {
+    if (!bvid) return;
+    state.currentBvid = bvid;
+
+    // Remove existing iframe
+    const existing = els.videoContainer.querySelector('iframe');
+    if (existing) existing.remove();
+
+    // Hide placeholder
+    els.videoPlaceholder.classList.add('hidden');
+
+    // Create iframe
+    const iframe = document.createElement('iframe');
+    iframe.src = getEmbedUrl(bvid);
+    iframe.allowFullscreen = true;
+    iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-presentation');
+    els.videoContainer.insertBefore(iframe, els.danmakuLayer);
+
+    // Update input
+    els.videoUrlInput.value = `https://www.bilibili.com/video/${bvid}`;
+
+    if (!fromSync) {
+      // Broadcast to peers
+      broadcast({ type: 'video', bvid });
+      addSystemMessage(`正在播放: ${bvid}`);
+    }
+  }
+
+  // ===== Danmaku System =====
+  function fireDanmaku(text, color = '#ffffff', fromSync = false) {
+    if (!state.danmakuEnabled) return;
+    if (state.danmakuCount >= DANMAKU_MAX) return;
+
+    const layer = els.danmakuLayer;
+    const containerH = layer.offsetHeight;
+    if (containerH === 0) return;
+
+    const item = document.createElement('div');
+    item.className = 'danmaku-item';
+    item.textContent = text;
+    item.style.color = color;
+
+    // Random vertical position (avoid overlapping top/bottom 10%)
+    const top = Math.random() * (containerH * 0.8) + containerH * 0.1;
+    item.style.top = top + 'px';
+    item.style.right = '-100%';
+    item.style.transform = 'translateX(0)';
+
+    // Compute speed based on text length
+    const speed = DANMAKU_SPEED + Math.random() * 2;
+    item.style.animationDuration = speed + 's';
+
+    layer.appendChild(item);
+    state.danmakuCount++;
+
+    item.addEventListener('animationend', () => {
+      item.remove();
+      state.danmakuCount--;
+    });
+
+    if (!fromSync) {
+      broadcast({ type: 'danmaku', text, color });
+    }
+  }
+
+  function sendDanmaku() {
+    const text = els.danmakuInput.value.trim();
+    if (!text) return;
+    const color = els.danmakuColor.value;
+    fireDanmaku(text, color);
+    els.danmakuInput.value = '';
+  }
+
+  // ===== Chat =====
+  function addChatMessage(nick, text) {
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    div.innerHTML = `<span class="nick">${escapeHtml(nick)}</span> <span class="text">${escapeHtml(text)}</span>`;
+    els.chatMessages.appendChild(div);
+    els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+  }
+
+  function addSystemMessage(text) {
+    const div = document.createElement('div');
+    div.className = 'chat-msg system';
+    div.innerHTML = `<span class="text">${escapeHtml(text)}</span>`;
+    els.chatMessages.appendChild(div);
+    els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+  }
+
+  function sendChat() {
+    const text = els.chatInput.value.trim();
+    if (!text) return;
+    addChatMessage(state.nickname, text);
+    broadcast({ type: 'chat', nick: state.nickname, text });
+    els.chatInput.value = '';
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ===== Members =====
+  function updateMembers() {
+    const members = [{ id: state.peerId, nickname: state.nickname, isHost: state.isHost }];
+
+    if (state.isHost) {
+      for (const [id, info] of state.connections) {
+        members.push({ id, nickname: info.nickname || '未知', isHost: false });
+      }
+    } else {
+      // Guest - use state.members populated from host broadcasts
+      for (const [id, info] of state.members) {
+        if (id !== state.peerId) {
+          members.push(info);
+        }
+      }
+    }
+
+    els.memberCount.textContent = members.length;
+    els.membersList.innerHTML = members.map(m => `
+      <div class="member-item">
+        <div class="member-avatar">${(m.nickname || '?')[0].toUpperCase()}</div>
+        <span class="member-name">${escapeHtml(m.nickname || '未知')}</span>
+        ${m.isHost ? '<span class="member-badge">房主</span>' : ''}
+      </div>
+    `).join('');
+  }
+
+  // ===== PeerJS / Networking =====
+  function initPeer(roomId, isHost) {
+    state.isHost = isHost;
+    state.roomId = roomId;
+
+    const peerId = isHost ? `yqk-${roomId}` : `yqk-${roomId}-${Date.now().toString(36)}`;
+
+    state.peer = new Peer(peerId, {
+      debug: 0,
+    });
+
+    state.peer.on('open', (id) => {
+      state.peerId = id;
+      console.log('[Peer] opened:', id);
+      setStatus('connected', isHost ? '房间已创建' : '已连接');
+      els.roomIdDisplay.textContent = roomId;
+      updateMembers();
+
+      if (!isHost) {
+        connectToHost(roomId);
+      }
+    });
+
+    state.peer.on('connection', (conn) => {
+      if (isHost) {
+        handleNewConnection(conn);
+      }
+    });
+
+    state.peer.on('error', (err) => {
+      console.error('[Peer] error:', err);
+      if (err.type === 'unavailable-id') {
+        toast('房间ID已被占用，请重试', 'error');
+        setStatus('disconnected', '连接失败');
+      } else if (err.type === 'peer-unavailable') {
+        toast('房间不存在或已关闭', 'error');
+        setStatus('disconnected', '房间不存在');
+      } else {
+        toast(`连接错误: ${err.type}`, 'error');
+      }
+    });
+
+    state.peer.on('disconnected', () => {
+      setStatus('disconnected', '连接断开');
+      // Try to reconnect
+      setTimeout(() => {
+        if (state.peer && !state.peer.destroyed) {
+          state.peer.reconnect();
+        }
+      }, 3000);
+    });
+  }
+
+  function handleNewConnection(conn) {
+    conn.on('open', () => {
+      console.log('[Host] new peer connected:', conn.peer);
+      state.connections.set(conn.peer, { conn, nickname: '未知' });
+
+      // Send current video state
+      if (state.currentBvid) {
+        conn.send({ type: 'video', bvid: state.currentBvid });
+      }
+
+      conn.on('data', (data) => handleMessage(data, conn));
+
+      conn.on('close', () => {
+        const info = state.connections.get(conn.peer);
+        const nick = info ? info.nickname : '未知';
+        state.connections.delete(conn.peer);
+        addSystemMessage(`${nick} 离开了房间`);
+        updateMembers();
+        broadcastMemberList();
+      });
+    });
+  }
+
+  function connectToHost(roomId) {
+    const hostPeerId = `yqk-${roomId}`;
+    const conn = state.peer.connect(hostPeerId, { reliable: true });
+    state.hostConn = conn;
+
+    conn.on('open', () => {
+      console.log('[Guest] connected to host');
+      setStatus('connected', '已连接到房间');
+      // Send our info
+      conn.send({ type: 'join', nickname: state.nickname });
+    });
+
+    conn.on('data', (data) => handleMessage(data, conn));
+
+    conn.on('close', () => {
+      setStatus('disconnected', '与房主断开连接');
+      toast('与房主断开连接', 'warning');
+    });
+  }
+
+  function handleMessage(data, conn) {
+    switch (data.type) {
+      case 'join':
+        if (state.isHost) {
+          const info = state.connections.get(conn.peer);
+          if (info) {
+            info.nickname = data.nickname;
+          }
+          addSystemMessage(`${data.nickname} 加入了房间`);
+          toast(`${data.nickname} 加入了房间`);
+          updateMembers();
+          broadcastMemberList();
+        }
+        break;
+
+      case 'video':
+        loadVideo(data.bvid, true);
+        addSystemMessage(`房主切换了视频: ${data.bvid}`);
+        break;
+
+      case 'danmaku':
+        fireDanmaku(data.text, data.color, true);
+        break;
+
+      case 'chat':
+        addChatMessage(data.nick, data.text);
+        // If host, relay to others
+        if (state.isHost) {
+          broadcastExcept(conn.peer, data);
+        }
+        break;
+
+      case 'members':
+        // Guest receives member list from host
+        state.members.clear();
+        data.list.forEach(m => state.members.set(m.id, m));
+        updateMembers();
+        break;
+
+      case 'nick_change':
+        if (state.isHost) {
+          const info = state.connections.get(conn.peer);
+          if (info) {
+            const oldNick = info.nickname;
+            info.nickname = data.nickname;
+            addSystemMessage(`${oldNick} 改名为 ${data.nickname}`);
+            broadcast({ type: 'chat_system', text: `${oldNick} 改名为 ${data.nickname}` });
+            updateMembers();
+            broadcastMemberList();
+          }
+        }
+        break;
+
+      case 'chat_system':
+        addSystemMessage(data.text);
+        break;
+    }
+  }
+
+  function broadcast(data) {
+    if (state.isHost) {
+      for (const [, info] of state.connections) {
+        try { info.conn.send(data); } catch(e) {}
+      }
+    } else if (state.hostConn) {
+      try { state.hostConn.send(data); } catch(e) {}
+    }
+  }
+
+  function broadcastExcept(excludePeerId, data) {
+    if (!state.isHost) return;
+    for (const [id, info] of state.connections) {
+      if (id !== excludePeerId) {
+        try { info.conn.send(data); } catch(e) {}
+      }
+    }
+  }
+
+  function broadcastMemberList() {
+    if (!state.isHost) return;
+    const list = [{ id: state.peerId, nickname: state.nickname, isHost: true }];
+    for (const [id, info] of state.connections) {
+      list.push({ id, nickname: info.nickname, isHost: false });
+    }
+    broadcast({ type: 'members', list });
+  }
+
+  function setStatus(status, text) {
+    els.statusDot.className = `status-dot ${status === 'connected' ? 'connected' : ''}`;
+    els.statusText.textContent = text;
+  }
+
+  // ===== UI Event Handlers =====
+  function initUI() {
+    // Welcome - Create Room
+    els.btnCreateRoom.addEventListener('click', () => {
+      const nick = els.welcomeNickname.value.trim() || '观众' + Math.floor(Math.random() * 1000);
+      state.nickname = nick;
+      els.nicknameInput.value = nick;
+
+      const roomId = generateRoomId();
+      initPeer(roomId, true);
+      els.welcomeOverlay.classList.add('hidden');
+      toast('房间创建成功！分享房间ID给朋友吧');
+    });
+
+    // Welcome - Show Join
+    els.btnShowJoin.addEventListener('click', () => {
+      els.joinRoomGroup.classList.toggle('hidden');
+      els.joinRoomInput.focus();
+    });
+
+    // Welcome - Join Room
+    els.btnJoinRoom.addEventListener('click', () => {
+      const nick = els.welcomeNickname.value.trim() || '观众' + Math.floor(Math.random() * 1000);
+      const roomId = els.joinRoomInput.value.trim().toUpperCase();
+      if (!roomId) { toast('请输入房间ID', 'warning'); return; }
+      state.nickname = nick;
+      els.nicknameInput.value = nick;
+      initPeer(roomId, false);
+      els.welcomeOverlay.classList.add('hidden');
+    });
+
+    // Enter key in join input
+    els.joinRoomInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') els.btnJoinRoom.click();
+    });
+
+    // Enter key in welcome nickname
+    els.welcomeNickname.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') els.btnCreateRoom.click();
+    });
+
+    // Load Video
+    els.btnLoadVideo.addEventListener('click', () => {
+      const bvid = parseBvid(els.videoUrlInput.value);
+      if (!bvid) { toast('请输入有效的B站视频链接', 'warning'); return; }
+      loadVideo(bvid);
+    });
+
+    els.videoUrlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') els.btnLoadVideo.click();
+    });
+
+    // Danmaku Toggle
+    els.danmakuToggle.addEventListener('click', () => {
+      state.danmakuEnabled = !state.danmakuEnabled;
+      els.danmakuToggle.classList.toggle('active', state.danmakuEnabled);
+      if (!state.danmakuEnabled) {
+        els.danmakuLayer.innerHTML = '';
+        state.danmakuCount = 0;
+      }
+    });
+
+    // Send Danmaku
+    els.btnSendDanmaku.addEventListener('click', sendDanmaku);
+    els.danmakuInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendDanmaku();
+    });
+
+    // Send Chat
+    els.btnSendChat.addEventListener('click', sendChat);
+    els.chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendChat();
+    });
+
+    // Sidebar Tabs
+    $$('.sidebar-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        $$('.sidebar-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        const target = tab.dataset.tab;
+        $('#tabChat').classList.toggle('hidden', target !== 'chat');
+        $('#tabRoom').classList.toggle('hidden', target !== 'room');
+      });
+    });
+
+    // Sidebar Toggle (mobile)
+    els.sidebarToggle.addEventListener('click', () => {
+      els.sidebar.classList.toggle('open');
+    });
+
+    // Close sidebar on outside click (mobile)
+    document.addEventListener('click', (e) => {
+      if (window.innerWidth <= 768 &&
+          els.sidebar.classList.contains('open') &&
+          !els.sidebar.contains(e.target) &&
+          e.target !== els.sidebarToggle &&
+          !els.sidebarToggle.contains(e.target)) {
+        els.sidebar.classList.remove('open');
+      }
+    });
+
+    // Copy Room ID
+    els.btnCopyRoomId.addEventListener('click', () => {
+      const id = els.roomIdDisplay.textContent;
+      if (id === '--') return;
+      navigator.clipboard.writeText(id).then(() => toast('房间ID已复制'));
+    });
+
+    // Share
+    els.btnShare.addEventListener('click', () => {
+      if (!state.roomId) { toast('请先创建或加入房间', 'warning'); return; }
+      const url = `${location.origin}${location.pathname}#room=${state.roomId}`;
+      if (navigator.share) {
+        navigator.share({ title: '一起看', text: '来一起看B站视频吧！', url });
+      } else {
+        navigator.clipboard.writeText(url).then(() => toast('分享链接已复制到剪贴板'));
+      }
+    });
+
+    // Nickname change
+    els.nicknameInput.addEventListener('change', () => {
+      const newNick = els.nicknameInput.value.trim();
+      if (!newNick || newNick === state.nickname) return;
+      const oldNick = state.nickname;
+      state.nickname = newNick;
+      if (state.isHost) {
+        addSystemMessage(`${oldNick} 改名为 ${newNick}`);
+        broadcast({ type: 'chat_system', text: `${oldNick} 改名为 ${newNick}` });
+        updateMembers();
+        broadcastMemberList();
+      } else {
+        broadcast({ type: 'nick_change', nickname: newNick });
+      }
+    });
+
+    // Check URL hash for room invitation
+    checkHashInvite();
+  }
+
+  function checkHashInvite() {
+    const hash = location.hash;
+    const match = hash.match(/room=([A-Za-z0-9]+)/);
+    if (match) {
+      const roomId = match[1].toUpperCase();
+      els.joinRoomInput.value = roomId;
+      els.joinRoomGroup.classList.remove('hidden');
+      // Auto-focus nickname
+      els.welcomeNickname.focus();
+    }
+  }
+
+  // ===== Init =====
+  document.addEventListener('DOMContentLoaded', initUI);
+
+})();
+</script>
+</body>
+</html>
