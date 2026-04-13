@@ -1037,14 +1037,28 @@
     setStatus('connecting', '正在连接...');
 
     state.peer = new Peer(peerId, {
-      debug: 1,
-      serialization: 'json',
+      debug: 2,
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun.stunprotocol.org' },
+          { urls: 'stun:global.stun.twilio.com:3478' },
+          {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject',
+          },
         ]
       }
     });
@@ -1077,21 +1091,11 @@
         toast('房间ID已被占用，请重试', 'error');
         setStatus('error', '房间ID冲突');
       } else if (err.type === 'peer-unavailable') {
-        // Host might not be ready yet, retry
-        if (!isHost && state.connectRetries < CONNECT_RETRY_MAX) {
-          state.connectRetries++;
-          const delay = CONNECT_RETRY_DELAY * state.connectRetries;
-          log('Peer', `Host not found, retry ${state.connectRetries}/${CONNECT_RETRY_MAX} in ${delay}ms`);
-          setStatus('connecting', `正在重连 (${state.connectRetries}/${CONNECT_RETRY_MAX})...`);
-          toast(`房间未就绪，${Math.round(delay/1000)}秒后重试...`, 'warning');
-          setTimeout(() => {
-            if (state.peer && !state.peer.destroyed) {
-              connectToHost(roomId);
-            }
-          }, delay);
+        log('Peer', 'peer-unavailable, will retry via retryConnect');
+        if (!isHost) {
+          retryConnect(roomId);
         } else {
-          toast('房间不存在或已关闭', 'error');
-          setStatus('error', '无法连接房间');
+          toast('目标不可达', 'error');
         }
       } else if (err.type === 'network') {
         toast('网络连接异常', 'error');
@@ -1164,29 +1168,44 @@
   // --- Guest: connect to host ---
   function connectToHost(roomId) {
     const hostPeerId = `yqk-${roomId}`;
-    log('Guest', 'Connecting to host:', hostPeerId);
+    log('Guest', 'Connecting to host:', hostPeerId, `(attempt ${state.connectRetries + 1})`);
     setStatus('connecting', '正在连接房间...');
 
-    const conn = state.peer.connect(hostPeerId, {
-      reliable: true,
-      serialization: 'json',
-    });
+    let conn;
+    try {
+      conn = state.peer.connect(hostPeerId, {
+        reliable: true,
+      });
+    } catch(e) {
+      log('Guest', 'peer.connect() threw:', e);
+    }
 
     if (!conn) {
       log('Guest', 'Failed to create connection object');
-      toast('连接失败', 'error');
+      retryConnect(roomId);
       return;
     }
 
     state.hostConn = conn;
+    let opened = false;
 
-    // Register data listener BEFORE open (critical fix)
+    // Timeout: if open doesn't fire within 15s, retry
+    const openTimeout = setTimeout(() => {
+      if (!opened) {
+        log('Guest', 'Connection open timeout (15s), retrying...');
+        try { conn.close(); } catch(e) {}
+        retryConnect(roomId);
+      }
+    }, 15000);
+
     conn.on('data', (data) => {
       log('Guest', 'Data from host:', data.type);
       handleMessage(data, conn);
     });
 
     conn.on('open', () => {
+      opened = true;
+      clearTimeout(openTimeout);
       log('Guest', 'Connected to host successfully!');
       state.connectRetries = 0;
       setStatus('connected', '已连接到房间');
@@ -1196,6 +1215,7 @@
     });
 
     conn.on('close', () => {
+      clearTimeout(openTimeout);
       log('Guest', 'Connection to host closed');
       setStatus('error', '与房主断开连接');
       toast('与房主断开连接', 'warning');
@@ -1203,9 +1223,29 @@
     });
 
     conn.on('error', (err) => {
+      clearTimeout(openTimeout);
       log('Guest', 'Connection error:', err);
-      setStatus('error', '连接错误');
+      if (!opened) {
+        retryConnect(roomId);
+      }
     });
+  }
+
+  function retryConnect(roomId) {
+    if (state.connectRetries < CONNECT_RETRY_MAX) {
+      state.connectRetries++;
+      const delay = CONNECT_RETRY_DELAY * state.connectRetries;
+      log('Guest', `Retry ${state.connectRetries}/${CONNECT_RETRY_MAX} in ${delay}ms`);
+      setStatus('connecting', `正在重连 (${state.connectRetries}/${CONNECT_RETRY_MAX})...`);
+      setTimeout(() => {
+        if (state.peer && !state.peer.destroyed) {
+          connectToHost(roomId);
+        }
+      }, delay);
+    } else {
+      toast('无法连接到房间，请检查房间ID或刷新重试', 'error');
+      setStatus('error', '连接失败');
+    }
   }
 
   // --- Message handler ---
