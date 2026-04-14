@@ -719,7 +719,7 @@
 
   <!-- ===== Header ===== -->
   <header class="header">
-    <div class="header-brand" onclick="location.hash=''; location.reload();">
+    <div class="header-brand" onclick="sessionStorage.clear(); location.hash=''; location.reload();">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
       </svg>
@@ -1030,6 +1030,7 @@
   function loadVideo(videoKey, fromSync = false) {
     if (!videoKey) return;
     state.currentBvid = videoKey;
+    try { sessionStorage.setItem('yqk_video', typeof videoKey === 'string' ? videoKey : encodeVideoKey(videoKey)); } catch(e) {}
 
     const video = typeof videoKey === 'string' ? decodeVideoKey(videoKey) : videoKey;
 
@@ -1146,6 +1147,11 @@
   function connectRoom(roomId) {
     state.roomId = roomId;
     state.reconnectAttempts = 0;
+    // Persist session for refresh recovery
+    try {
+      sessionStorage.setItem('yqk_room', roomId);
+      sessionStorage.setItem('yqk_nick', state.nickname);
+    } catch(e) {}
     doConnect();
   }
 
@@ -1617,7 +1623,34 @@
 
     els.btnMute.addEventListener('click', toggleMute);
 
-    checkHashInvite();
+    // Try to restore session first, then check hash invite
+    if (!tryRestoreSession()) {
+      checkHashInvite();
+    }
+  }
+
+  function tryRestoreSession() {
+    try {
+      const roomId = sessionStorage.getItem('yqk_room');
+      const nick = sessionStorage.getItem('yqk_nick');
+      if (roomId && nick) {
+        log('Session', `Restoring: room=${roomId}, nick=${nick}`);
+        state.nickname = nick;
+        els.nicknameInput.value = nick;
+
+        // Restore video from storage (will be overridden by server welcome)
+        const savedVideo = sessionStorage.getItem('yqk_video');
+        if (savedVideo) {
+          loadVideo(savedVideo, true);
+        }
+
+        connectRoom(roomId);
+        els.welcomeOverlay.classList.add('hidden');
+        toast('已恢复房间连接');
+        return true;
+      }
+    } catch(e) {}
+    return false;
   }
 
   function checkHashInvite() {
