@@ -659,8 +659,8 @@
     /* ========== Voice Chat ========== */
     .voice-bar {
       display: flex; align-items: center; gap: 8px;
-      padding: 10px 16px;
-      background: var(--bg-secondary);
+      padding: 8px 12px;
+      background: var(--bg-card);
       border-top: 1px solid var(--border);
       flex-shrink: 0;
     }
@@ -774,17 +774,6 @@
         <button class="btn btn-pink btn-sm" id="btnSendDanmaku">发送</button>
       </div>
 
-      <!-- Voice Chat Bar -->
-      <div class="voice-bar">
-        <button class="btn-voice" id="btnVoice">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-          语音
-        </button>
-        <button class="btn-mute" id="btnMute" title="静音">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-        </button>
-        <span class="voice-users" id="voiceUsers"></span>
-      </div>
     </div>
 
     <!-- Sidebar -->
@@ -798,6 +787,17 @@
         <div class="tab-content" id="tabChat">
           <div class="chat-messages" id="chatMessages">
             <div class="chat-msg system"><span class="text">欢迎来到一起看~</span></div>
+          </div>
+          <!-- Voice Chat Bar -->
+          <div class="voice-bar">
+            <button class="btn-voice" id="btnVoice">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              语音
+            </button>
+            <button class="btn-mute" id="btnMute" title="静音">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+            </button>
+            <span class="voice-users" id="voiceUsers"></span>
           </div>
           <div class="chat-input-bar">
             <input type="text" id="chatInput" placeholder="发条消息..." maxlength="200">
