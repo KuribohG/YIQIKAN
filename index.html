@@ -656,6 +656,60 @@
       .video-input-group { width: 100%; }
     }
 
+    /* ========== Voice Chat ========== */
+    .voice-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .btn-voice {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 6px; padding: 8px 16px;
+      border: none; border-radius: 20px;
+      font-size: 0.82rem; font-weight: 500;
+      cursor: pointer; transition: all 0.2s;
+      color: var(--text-primary);
+      background: var(--bg-input);
+    }
+    .btn-voice:hover { background: var(--border); }
+    .btn-voice.active {
+      background: var(--success);
+      color: #fff;
+      box-shadow: 0 0 12px rgba(76,175,80,0.3);
+    }
+    .btn-voice.active:hover { background: #43a047; }
+
+    .btn-mute {
+      padding: 8px; width: 34px; height: 34px;
+      border: none; border-radius: 50%;
+      background: var(--bg-input);
+      color: var(--text-primary);
+      cursor: pointer; transition: all 0.2s;
+      display: none; align-items: center; justify-content: center;
+    }
+    .btn-mute:hover { background: var(--border); }
+    .btn-mute.muted { background: var(--danger); color: #fff; }
+    .btn-mute.show { display: inline-flex; }
+
+    .voice-users {
+      flex: 1;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    @keyframes pulse-ring {
+      0% { box-shadow: 0 0 0 0 rgba(76,175,80,0.4); }
+      70% { box-shadow: 0 0 0 8px rgba(76,175,80,0); }
+      100% { box-shadow: 0 0 0 0 rgba(76,175,80,0); }
+    }
+    .btn-voice.active { animation: pulse-ring 2s infinite; }
+
     /* ========== Utility ========== */
     .hidden { display: none !important; }
     .flex-center { display: flex; align-items: center; justify-content: center; }
@@ -718,6 +772,18 @@
         </div>
         <input type="text" id="danmakuInput" placeholder="发个友善的弹幕见证这一刻~" maxlength="100">
         <button class="btn btn-pink btn-sm" id="btnSendDanmaku">发送</button>
+      </div>
+
+      <!-- Voice Chat Bar -->
+      <div class="voice-bar">
+        <button class="btn-voice" id="btnVoice">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          语音
+        </button>
+        <button class="btn-mute" id="btnMute" title="静音">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+        <span class="voice-users" id="voiceUsers"></span>
       </div>
     </div>
 
@@ -828,6 +894,12 @@
     reconnectAttempts: 0,
     heartbeatTimer: null,
     connected: false,
+    // Voice chat
+    inVoice: false,
+    muted: false,
+    localStream: null,
+    peerConnections: new Map(), // sessionId -> RTCPeerConnection
+    voiceUsers: new Set(),      // sessionIds in voice
   };
 
   // ===== DOM Refs =====
@@ -865,6 +937,9 @@
     statusText: $('#statusText'),
     btnShare: $('#btnShare'),
     toastContainer: $('#toastContainer'),
+    btnVoice: $('#btnVoice'),
+    btnMute: $('#btnMute'),
+    voiceUsers: $('#voiceUsers'),
   };
 
   // ===== Logging =====
@@ -1112,6 +1187,8 @@
       log('WS', `Closed: code=${event.code} reason=${event.reason}`);
       state.connected = false;
       stopHeartbeat();
+      // Cleanup voice on disconnect
+      if (state.inVoice) { leaveVoice(); }
 
       if (state.roomId) {
         setStatus('connecting', '连接断开，正在重连...');
@@ -1184,6 +1261,34 @@
       case 'chat_system':
         addSystemMessage(data.text);
         break;
+
+      // --- Voice signaling ---
+      case 'rtc_join_voice':
+        state.voiceUsers.add(data.from);
+        updateVoiceUsers();
+        // If we're in voice, initiate connection to the new peer
+        if (state.inVoice) {
+          createPeerConnection(data.from, true);
+        }
+        break;
+
+      case 'rtc_leave_voice':
+        state.voiceUsers.delete(data.from);
+        cleanupPeer(data.from);
+        updateVoiceUsers();
+        break;
+
+      case 'rtc_offer':
+        handleRtcOffer(data);
+        break;
+
+      case 'rtc_answer':
+        handleRtcAnswer(data);
+        break;
+
+      case 'rtc_ice':
+        handleRtcIce(data);
+        break;
     }
   }
 
@@ -1208,6 +1313,180 @@
     dot.className = 'status-dot';
     if (status === 'connected') dot.classList.add('connected');
     els.statusText.textContent = text;
+  }
+
+  // ===== Voice Chat (WebRTC) =====
+  const RTC_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+  };
+
+  async function joinVoice() {
+    try {
+      state.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch(e) {
+      log('Voice', 'Mic access denied:', e);
+      toast('无法访问麦克风', 'error');
+      return;
+    }
+
+    state.inVoice = true;
+    state.muted = false;
+    els.btnVoice.classList.add('active');
+    els.btnVoice.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg> 挂断';
+    els.btnMute.classList.add('show');
+    toast('已开启语音');
+
+    // Tell server we joined voice
+    wsSend({ type: 'rtc_join_voice' });
+
+    // Create peer connections to all existing voice users
+    for (const peerId of state.voiceUsers) {
+      createPeerConnection(peerId, true);
+    }
+
+    state.voiceUsers.add(state.sessionId);
+    updateVoiceUsers();
+  }
+
+  function leaveVoice() {
+    state.inVoice = false;
+
+    // Stop mic
+    if (state.localStream) {
+      state.localStream.getTracks().forEach(t => t.stop());
+      state.localStream = null;
+    }
+
+    // Close all peer connections
+    for (const [id, pc] of state.peerConnections) {
+      pc.close();
+    }
+    state.peerConnections.clear();
+
+    els.btnVoice.classList.remove('active');
+    els.btnVoice.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg> 语音';
+    els.btnMute.classList.remove('show', 'muted');
+
+    wsSend({ type: 'rtc_leave_voice' });
+    state.voiceUsers.delete(state.sessionId);
+    updateVoiceUsers();
+    toast('已退出语音');
+  }
+
+  function toggleMute() {
+    if (!state.localStream) return;
+    state.muted = !state.muted;
+    state.localStream.getAudioTracks().forEach(t => { t.enabled = !state.muted; });
+    els.btnMute.classList.toggle('muted', state.muted);
+    els.btnMute.title = state.muted ? '取消静音' : '静音';
+  }
+
+  function createPeerConnection(remoteId, isInitiator) {
+    if (state.peerConnections.has(remoteId)) return;
+    log('Voice', `Creating PC to ${remoteId}, initiator=${isInitiator}`);
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+    state.peerConnections.set(remoteId, pc);
+
+    // Add local audio tracks
+    if (state.localStream) {
+      state.localStream.getTracks().forEach(track => {
+        pc.addTrack(track, state.localStream);
+      });
+    }
+
+    // Play remote audio
+    pc.ontrack = (event) => {
+      log('Voice', `Got remote track from ${remoteId}`);
+      const audio = document.createElement('audio');
+      audio.srcObject = event.streams[0];
+      audio.autoplay = true;
+      audio.id = `audio-${remoteId}`;
+      document.body.appendChild(audio);
+    };
+
+    // ICE candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        wsSend({
+          type: 'rtc_ice',
+          target: remoteId,
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      log('Voice', `PC ${remoteId} state: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        cleanupPeer(remoteId);
+      }
+    };
+
+    // If initiator, create offer
+    if (isInitiator) {
+      pc.createOffer().then(offer => {
+        return pc.setLocalDescription(offer);
+      }).then(() => {
+        wsSend({
+          type: 'rtc_offer',
+          target: remoteId,
+          sdp: pc.localDescription,
+        });
+      }).catch(e => log('Voice', 'Offer error:', e));
+    }
+
+    return pc;
+  }
+
+  function handleRtcOffer(data) {
+    if (!state.inVoice) return;
+    const pc = createPeerConnection(data.from, false);
+    if (!pc) return;
+
+    pc.setRemoteDescription(new RTCSessionDescription(data.sdp))
+      .then(() => pc.createAnswer())
+      .then(answer => pc.setLocalDescription(answer))
+      .then(() => {
+        wsSend({
+          type: 'rtc_answer',
+          target: data.from,
+          sdp: pc.localDescription,
+        });
+      })
+      .catch(e => log('Voice', 'Answer error:', e));
+  }
+
+  function handleRtcAnswer(data) {
+    const pc = state.peerConnections.get(data.from);
+    if (pc) {
+      pc.setRemoteDescription(new RTCSessionDescription(data.sdp))
+        .catch(e => log('Voice', 'setRemoteDesc error:', e));
+    }
+  }
+
+  function handleRtcIce(data) {
+    const pc = state.peerConnections.get(data.from);
+    if (pc) {
+      pc.addIceCandidate(new RTCIceCandidate(data.candidate))
+        .catch(e => log('Voice', 'addIceCandidate error:', e));
+    }
+  }
+
+  function cleanupPeer(remoteId) {
+    const pc = state.peerConnections.get(remoteId);
+    if (pc) { try { pc.close(); } catch(e) {} }
+    state.peerConnections.delete(remoteId);
+    const audioEl = document.getElementById(`audio-${remoteId}`);
+    if (audioEl) audioEl.remove();
+  }
+
+  function updateVoiceUsers() {
+    const count = state.voiceUsers.size;
+    els.voiceUsers.textContent = count > 0 ? `${count}人在语音中` : '';
   }
 
   // ===== UI Event Handlers =====
@@ -1331,6 +1610,13 @@
     });
 
     // Check URL hash for room invitation
+    // Voice chat
+    els.btnVoice.addEventListener('click', () => {
+      if (state.inVoice) { leaveVoice(); } else { joinVoice(); }
+    });
+
+    els.btnMute.addEventListener('click', toggleMute);
+
     checkHashInvite();
   }
 

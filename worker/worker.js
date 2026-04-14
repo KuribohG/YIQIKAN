@@ -1,6 +1,6 @@
 // ============================================================
 // 一起看 - Cloudflare Worker WebSocket 中继服务
-// 使用 Durable Objects 实现房间隔离
+// 使用 Durable Objects (Hibernation API) 实现房间隔离
 // ============================================================
 
 export default {
@@ -26,7 +26,6 @@ export default {
         return new Response('Expected WebSocket', { status: 426, headers: corsHeaders() });
       }
 
-      // Get or create Durable Object for this room
       const id = env.ROOM.idFromName(roomId);
       const room = env.ROOM.get(id);
       return room.fetch(request);
@@ -45,13 +44,12 @@ function corsHeaders() {
 }
 
 // ============================================================
-// Durable Object: Room
+// Durable Object: Room (using Hibernation API)
 // ============================================================
 export class Room {
   constructor(state, env) {
     this.state = state;
-    this.sessions = new Map(); // ws -> { id, nickname }
-    this.hostId = null;
+    this.hostTag = null;
     this.currentBvid = '';
     this.counter = 0;
   }
@@ -60,88 +58,93 @@ export class Room {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    this.handleSession(server);
+    const tag = `u${++this.counter}`;
 
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-    });
-  }
+    // Use Hibernation API: acceptWebSocket with tags
+    this.state.acceptWebSocket(server, [tag]);
 
-  handleSession(ws) {
-    ws.accept();
+    // Attach metadata via serializeAttachment
+    server.serializeAttachment({ id: tag, nickname: '未知' });
 
-    const sessionId = `u${++this.counter}`;
-    this.sessions.set(ws, { id: sessionId, nickname: '未知' });
-
-    // If this is the first user, they become host
-    if (this.sessions.size === 1) {
-      this.hostId = sessionId;
+    // If first websocket, this user is host
+    const allSockets = this.state.getWebSockets();
+    if (allSockets.length === 1) {
+      this.hostTag = tag;
     }
 
-    ws.addEventListener('message', (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        this.handleMessage(ws, data);
-      } catch(e) {
-        // ignore invalid JSON
-      }
-    });
-
-    ws.addEventListener('close', () => {
-      const session = this.sessions.get(ws);
-      this.sessions.delete(ws);
-
-      if (session) {
-        // Notify others
-        this.broadcastExcept(ws, {
-          type: 'chat_system',
-          text: `${session.nickname} 离开了房间`,
-        });
-
-        // If host left, assign new host
-        if (session.id === this.hostId && this.sessions.size > 0) {
-          const next = this.sessions.values().next().value;
-          this.hostId = next.id;
-          this.broadcastAll({
-            type: 'chat_system',
-            text: `${next.nickname} 成为了新房主`,
-          });
-        }
-
-        this.broadcastMemberList();
-      }
-    });
-
-    ws.addEventListener('error', () => {
-      this.sessions.delete(ws);
-    });
+    return new Response(null, { status: 101, webSocket: client });
   }
 
+  // --- Hibernation API event handlers ---
+
+  async webSocketMessage(ws, message) {
+    try {
+      const data = JSON.parse(message);
+      this.handleMessage(ws, data);
+    } catch(e) {
+      // ignore invalid JSON
+    }
+  }
+
+  async webSocketClose(ws, code, reason, wasClean) {
+    const meta = ws.deserializeAttachment();
+    ws.close(code, reason);
+
+    if (meta) {
+      this.broadcastExcept(ws, {
+        type: 'chat_system',
+        text: `${meta.nickname} 离开了房间`,
+      });
+
+      // If host left, assign new host
+      if (meta.id === this.hostTag) {
+        const remaining = this.state.getWebSockets();
+        if (remaining.length > 0) {
+          const nextMeta = remaining[0].deserializeAttachment();
+          if (nextMeta) {
+            this.hostTag = nextMeta.id;
+            this.broadcastAll({
+              type: 'chat_system',
+              text: `${nextMeta.nickname} 成为了新房主`,
+            });
+          }
+        }
+      }
+
+      this.broadcastMemberList();
+    }
+  }
+
+  async webSocketError(ws, error) {
+    ws.close(1011, 'WebSocket error');
+  }
+
+  // --- Message handling ---
+
   handleMessage(ws, data) {
-    const session = this.sessions.get(ws);
-    if (!session) return;
+    const meta = ws.deserializeAttachment();
+    if (!meta) return;
 
     switch (data.type) {
       case 'join':
-        session.nickname = data.nickname || '未知';
-        // Tell this user their session info + current state
+        meta.nickname = data.nickname || '未知';
+        ws.serializeAttachment(meta);
+
         this.send(ws, {
           type: 'welcome',
-          sessionId: session.id,
-          isHost: session.id === this.hostId,
+          sessionId: meta.id,
+          isHost: meta.id === this.hostTag,
           currentBvid: this.currentBvid,
         });
-        // Notify others
+
         this.broadcastExcept(ws, {
           type: 'chat_system',
-          text: `${session.nickname} 加入了房间`,
+          text: `${meta.nickname} 加入了房间`,
         });
         this.broadcastMemberList();
         break;
 
       case 'video':
-        // Only host can change video (or anyone if no restriction needed)
         this.currentBvid = data.bvid;
         this.broadcastExcept(ws, {
           type: 'video',
@@ -160,59 +163,101 @@ export class Room {
       case 'chat':
         this.broadcastExcept(ws, {
           type: 'chat',
-          nick: session.nickname,
+          nick: meta.nickname,
           text: data.text,
         });
         break;
 
-      case 'nick_change':
-        const oldNick = session.nickname;
-        session.nickname = data.nickname || '未知';
+      case 'nick_change': {
+        const oldNick = meta.nickname;
+        meta.nickname = data.nickname || '未知';
+        ws.serializeAttachment(meta);
         this.broadcastAll({
           type: 'chat_system',
-          text: `${oldNick} 改名为 ${session.nickname}`,
+          text: `${oldNick} 改名为 ${meta.nickname}`,
         });
         this.broadcastMemberList();
         break;
+      }
 
       case 'ping':
         this.send(ws, { type: 'pong' });
         break;
+
+      // --- WebRTC signaling relay ---
+      case 'rtc_offer':
+      case 'rtc_answer':
+      case 'rtc_ice':
+        // Forward to target peer by sessionId
+        if (data.target) {
+          const targetWs = this.findWsBySessionId(data.target);
+          if (targetWs) {
+            this.send(targetWs, { ...data, from: meta.id });
+          }
+        }
+        break;
+
+      case 'rtc_join_voice':
+        // Notify all others that this user wants voice chat
+        this.broadcastExcept(ws, {
+          type: 'rtc_join_voice',
+          from: meta.id,
+          nickname: meta.nickname,
+        });
+        break;
+
+      case 'rtc_leave_voice':
+        this.broadcastExcept(ws, {
+          type: 'rtc_leave_voice',
+          from: meta.id,
+        });
+        break;
     }
   }
+
+  findWsBySessionId(sessionId) {
+    for (const ws of this.state.getWebSockets()) {
+      const meta = ws.deserializeAttachment();
+      if (meta && meta.id === sessionId) return ws;
+    }
+    return null;
+  }
+
+  // --- Helpers ---
 
   send(ws, data) {
     try {
       ws.send(JSON.stringify(data));
-    } catch(e) {
-      this.sessions.delete(ws);
-    }
+    } catch(e) {}
   }
 
   broadcastAll(data) {
     const msg = JSON.stringify(data);
-    for (const [ws] of this.sessions) {
-      try { ws.send(msg); } catch(e) { this.sessions.delete(ws); }
+    for (const ws of this.state.getWebSockets()) {
+      try { ws.send(msg); } catch(e) {}
     }
   }
 
   broadcastExcept(excludeWs, data) {
     const msg = JSON.stringify(data);
-    for (const [ws] of this.sessions) {
+    for (const ws of this.state.getWebSockets()) {
       if (ws !== excludeWs) {
-        try { ws.send(msg); } catch(e) { this.sessions.delete(ws); }
+        try { ws.send(msg); } catch(e) {}
       }
     }
   }
 
   broadcastMemberList() {
     const list = [];
-    for (const [, session] of this.sessions) {
-      list.push({
-        id: session.id,
-        nickname: session.nickname,
-        isHost: session.id === this.hostId,
-      });
+    for (const ws of this.state.getWebSockets()) {
+      const meta = ws.deserializeAttachment();
+      if (meta) {
+        list.push({
+          id: meta.id,
+          nickname: meta.nickname,
+          isHost: meta.id === this.hostTag,
+        });
+      }
     }
     this.broadcastAll({ type: 'members', list });
   }
