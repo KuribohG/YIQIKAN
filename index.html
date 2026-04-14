@@ -695,14 +695,14 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <polygon points="5 3 19 12 5 21 5 3"/>
           </svg>
-          <p>输入B站视频链接开始观看</p>
+          <p>输入B站或YouTube链接开始观看</p>
         </div>
       </div>
 
       <!-- Controls -->
       <div class="controls-bar">
         <div class="video-input-group">
-          <input type="text" id="videoUrlInput" placeholder="粘贴B站视频链接，如 https://www.bilibili.com/video/BVxxxxxxx">
+          <input type="text" id="videoUrlInput" placeholder="粘贴B站或YouTube视频链接">
           <button class="btn btn-primary" id="btnLoadVideo">播放</button>
         </div>
         <label class="danmaku-toggle">
@@ -776,7 +776,7 @@
     <div class="welcome-card">
       <div class="welcome-header">
         <h1>一起看</h1>
-        <p>和朋友一起同步看B站视频</p>
+        <p>和朋友一起同步看B站/YouTube视频</p>
       </div>
       <div class="welcome-form">
         <div class="form-group">
@@ -890,31 +890,73 @@
     return id;
   }
 
-  function parseBvid(input) {
+  // parseVideoInput returns { platform: 'bilibili'|'youtube', id: string } or null
+  function parseVideoInput(input) {
     input = input.trim();
-    if (/^BV[\w]+$/i.test(input)) return input;
-    const m = input.match(/bilibili\.com\/video\/(BV[\w]+)/i);
-    if (m) return m[1];
+
+    // --- Bilibili ---
+    if (/^BV[\w]+$/i.test(input)) return { platform: 'bilibili', id: input };
+    const bvMatch = input.match(/bilibili\.com\/video\/(BV[\w]+)/i);
+    if (bvMatch) return { platform: 'bilibili', id: bvMatch[1] };
     if (input.includes('b23.tv')) {
       toast('请使用完整B站链接（非短链接）', 'warning');
       return null;
     }
-    const aidMatch = input.match(/bilibili\.com\/video\/av(\d+)/i);
-    if (aidMatch) {
+    if (/bilibili\.com\/video\/av\d+/i.test(input)) {
       toast('暂不支持av号，请使用BV号链接', 'warning');
       return null;
     }
+
+    // --- YouTube ---
+    // youtube.com/watch?v=ID
+    const ytWatch = input.match(/(?:youtube\.com|youtube-nocookie\.com)\/watch\?.*v=([\w-]{11})/i);
+    if (ytWatch) return { platform: 'youtube', id: ytWatch[1] };
+    // youtu.be/ID
+    const ytShort = input.match(/youtu\.be\/([\w-]{11})/i);
+    if (ytShort) return { platform: 'youtube', id: ytShort[1] };
+    // youtube.com/embed/ID
+    const ytEmbed = input.match(/youtube\.com\/embed\/([\w-]{11})/i);
+    if (ytEmbed) return { platform: 'youtube', id: ytEmbed[1] };
+    // youtube.com/shorts/ID
+    const ytShorts = input.match(/youtube\.com\/shorts\/([\w-]{11})/i);
+    if (ytShorts) return { platform: 'youtube', id: ytShorts[1] };
+    // bare YouTube ID (11 chars)
+    if (/^[\w-]{11}$/.test(input)) return { platform: 'youtube', id: input };
+
     return null;
   }
 
-  function getEmbedUrl(bvid) {
-    return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0&autoplay=1`;
+  // Encode video info as a single string for sync: "bilibili:BVxxx" or "youtube:xxx"
+  function encodeVideoKey(video) {
+    return `${video.platform}:${video.id}`;
+  }
+
+  function decodeVideoKey(key) {
+    const i = key.indexOf(':');
+    if (i === -1) return { platform: 'bilibili', id: key }; // backward compat
+    return { platform: key.substring(0, i), id: key.substring(i + 1) };
+  }
+
+  function getEmbedUrl(video) {
+    if (video.platform === 'youtube') {
+      return `https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0`;
+    }
+    return `https://player.bilibili.com/player.html?bvid=${video.id}&page=1&high_quality=1&danmaku=0&autoplay=1`;
+  }
+
+  function getDisplayUrl(video) {
+    if (video.platform === 'youtube') {
+      return `https://www.youtube.com/watch?v=${video.id}`;
+    }
+    return `https://www.bilibili.com/video/${video.id}`;
   }
 
   // ===== Video =====
-  function loadVideo(bvid, fromSync = false) {
-    if (!bvid) return;
-    state.currentBvid = bvid;
+  function loadVideo(videoKey, fromSync = false) {
+    if (!videoKey) return;
+    state.currentBvid = videoKey;
+
+    const video = typeof videoKey === 'string' ? decodeVideoKey(videoKey) : videoKey;
 
     const existing = els.videoContainer.querySelector('iframe');
     if (existing) existing.remove();
@@ -922,17 +964,20 @@
     els.videoPlaceholder.classList.add('hidden');
 
     const iframe = document.createElement('iframe');
-    iframe.src = getEmbedUrl(bvid);
+    iframe.src = getEmbedUrl(video);
     iframe.allowFullscreen = true;
     iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-presentation');
+    if (video.platform === 'bilibili') {
+      iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-presentation');
+    }
     els.videoContainer.insertBefore(iframe, els.danmakuLayer);
 
-    els.videoUrlInput.value = `https://www.bilibili.com/video/${bvid}`;
+    els.videoUrlInput.value = getDisplayUrl(video);
 
+    const key = typeof videoKey === 'string' ? videoKey : encodeVideoKey(video);
     if (!fromSync) {
-      wsSend({ type: 'video', bvid });
-      addSystemMessage(`正在播放: ${bvid}`);
+      wsSend({ type: 'video', bvid: key });
+      addSystemMessage(`正在播放: ${getDisplayUrl(video)}`);
     }
   }
 
@@ -1205,9 +1250,9 @@
 
     // Load Video
     els.btnLoadVideo.addEventListener('click', () => {
-      const bvid = parseBvid(els.videoUrlInput.value);
-      if (!bvid) { toast('请输入有效的B站视频链接', 'warning'); return; }
-      loadVideo(bvid);
+      const video = parseVideoInput(els.videoUrlInput.value);
+      if (!video) { toast('请输入B站或YouTube视频链接', 'warning'); return; }
+      loadVideo(encodeVideoKey(video));
     });
 
     els.videoUrlInput.addEventListener('keydown', (e) => {
