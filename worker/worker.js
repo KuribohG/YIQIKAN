@@ -51,6 +51,7 @@ export class Room {
     this.state = state;
     this.hostTag = null;
     this.currentBvid = '';
+    this.videoStartedAt = 0; // server timestamp (ms) when video started playing
     this.counter = 0;
   }
 
@@ -135,6 +136,8 @@ export class Room {
           sessionId: meta.id,
           isHost: meta.id === this.hostTag,
           currentBvid: this.currentBvid,
+          videoStartedAt: this.videoStartedAt,
+          serverTime: Date.now(),
         });
 
         this.broadcastExcept(ws, {
@@ -146,10 +149,36 @@ export class Room {
 
       case 'video':
         this.currentBvid = data.bvid;
+        this.videoStartedAt = Date.now();
         this.broadcastExcept(ws, {
           type: 'video',
           bvid: data.bvid,
+          videoStartedAt: this.videoStartedAt,
+          serverTime: Date.now(),
         });
+        break;
+
+      case 'sync_request':
+        // New user asks for progress; forward to all others, first reply wins on client
+        this.broadcastExcept(ws, {
+          type: 'sync_request',
+          from: meta.id,
+        });
+        break;
+
+      case 'sync_reply':
+        // Forward progress reply to the requesting peer
+        if (data.target) {
+          const targetWs = this.findWsBySessionId(data.target);
+          if (targetWs) {
+            this.send(targetWs, {
+              type: 'sync_reply',
+              from: meta.id,
+              currentTime: data.currentTime,
+              platform: data.platform,
+            });
+          }
+        }
         break;
 
       case 'danmaku':

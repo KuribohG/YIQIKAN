@@ -894,6 +894,9 @@
     reconnectAttempts: 0,
     heartbeatTimer: null,
     connected: false,
+    // YouTube player ref
+    ytPlayer: null,
+    syncAnswered: false,
     // Voice chat
     inVoice: false,
     muted: false,
@@ -1012,11 +1015,12 @@
     return { platform: key.substring(0, i), id: key.substring(i + 1) };
   }
 
-  function getEmbedUrl(video) {
+  function getEmbedUrl(video, startSeconds = 0) {
+    const t = Math.floor(startSeconds);
     if (video.platform === 'youtube') {
-      return `https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0`;
+      return `https://www.youtube.com/embed/${video.id}?autoplay=1&rel=0&enablejsapi=1&origin=${location.origin}${t > 0 ? '&start=' + t : ''}`;
     }
-    return `https://player.bilibili.com/player.html?bvid=${video.id}&page=1&high_quality=1&danmaku=0&autoplay=1`;
+    return `https://player.bilibili.com/player.html?bvid=${video.id}&page=1&high_quality=1&danmaku=0&autoplay=1${t > 0 ? '&t=' + t : ''}`;
   }
 
   function getDisplayUrl(video) {
@@ -1027,26 +1031,54 @@
   }
 
   // ===== Video =====
-  function loadVideo(videoKey, fromSync = false) {
+  // startSeconds: seconds to skip to (for sync)
+  function loadVideo(videoKey, fromSync = false, startSeconds = 0) {
     if (!videoKey) return;
     state.currentBvid = videoKey;
     try { sessionStorage.setItem('yqk_video', typeof videoKey === 'string' ? videoKey : encodeVideoKey(videoKey)); } catch(e) {}
 
     const video = typeof videoKey === 'string' ? decodeVideoKey(videoKey) : videoKey;
 
+    // Cleanup previous YouTube player
+    if (state.ytPlayer) {
+      state.ytPlayer = null;
+    }
     const existing = els.videoContainer.querySelector('iframe');
     if (existing) existing.remove();
+    const existingDiv = els.videoContainer.querySelector('#ytPlayerDiv');
+    if (existingDiv) existingDiv.remove();
 
     els.videoPlaceholder.classList.add('hidden');
 
-    const iframe = document.createElement('iframe');
-    iframe.src = getEmbedUrl(video);
-    iframe.allowFullscreen = true;
-    iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
-    if (video.platform === 'bilibili') {
+    if (video.platform === 'youtube') {
+      // Use YouTube iframe API for progress tracking
+      const div = document.createElement('div');
+      div.id = 'ytPlayerDiv';
+      div.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;';
+      els.videoContainer.insertBefore(div, els.danmakuLayer);
+
+      loadYouTubeAPI(() => {
+        state.ytPlayer = new YT.Player('ytPlayerDiv', {
+          videoId: video.id,
+          playerVars: {
+            autoplay: 1,
+            rel: 0,
+            start: Math.floor(startSeconds),
+          },
+          events: {
+            onReady: (e) => { log('YT', 'Player ready'); },
+          },
+        });
+      });
+    } else {
+      // Bilibili: use iframe with &t= parameter
+      const iframe = document.createElement('iframe');
+      iframe.src = getEmbedUrl(video, startSeconds);
+      iframe.allowFullscreen = true;
+      iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
       iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-presentation');
+      els.videoContainer.insertBefore(iframe, els.danmakuLayer);
     }
-    els.videoContainer.insertBefore(iframe, els.danmakuLayer);
 
     els.videoUrlInput.value = getDisplayUrl(video);
 
@@ -1055,6 +1087,42 @@
       wsSend({ type: 'video', bvid: key });
       addSystemMessage(`正在播放: ${getDisplayUrl(video)}`);
     }
+  }
+
+  // YouTube iframe API loader
+  let ytAPIReady = false;
+  let ytAPICallbacks = [];
+
+  function loadYouTubeAPI(cb) {
+    if (ytAPIReady) { cb(); return; }
+    ytAPICallbacks.push(cb);
+    if (!document.getElementById('yt-api-script')) {
+      const tag = document.createElement('script');
+      tag.id = 'yt-api-script';
+      tag.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(tag);
+      window.onYouTubeIframeAPIReady = () => {
+        ytAPIReady = true;
+        ytAPICallbacks.forEach(fn => fn());
+        ytAPICallbacks = [];
+      };
+    }
+  }
+
+  function formatTime(seconds) {
+    const s = Math.floor(seconds);
+    const m = Math.floor(s / 60);
+    const h = Math.floor(m / 60);
+    if (h > 0) return `${h}:${String(m % 60).padStart(2,'0')}:${String(s % 60).padStart(2,'0')}`;
+    return `${m}:${String(s % 60).padStart(2,'0')}`;
+  }
+
+  // Get current YouTube progress (seconds), or null
+  function getYouTubeProgress() {
+    if (state.ytPlayer && typeof state.ytPlayer.getCurrentTime === 'function') {
+      try { return state.ytPlayer.getCurrentTime(); } catch(e) {}
+    }
+    return null;
   }
 
   // ===== Danmaku System =====
@@ -1236,20 +1304,69 @@
 
     switch (data.type) {
       case 'welcome':
-        // Server tells us our session info and current state
         state.sessionId = data.sessionId;
         state.isHost = data.isHost;
         log('WS', `Session: ${data.sessionId}, isHost: ${data.isHost}`);
         if (data.currentBvid) {
-          loadVideo(data.currentBvid, true);
-          addSystemMessage(`正在播放: ${data.currentBvid}`);
+          const video = decodeVideoKey(data.currentBvid);
+          if (video.platform === 'youtube') {
+            // For YouTube, ask other peers for precise progress
+            state.syncAnswered = false;
+            // Estimate from server timestamp as fallback
+            let estimatedSeconds = 0;
+            if (data.videoStartedAt && data.serverTime) {
+              estimatedSeconds = (data.serverTime - data.videoStartedAt) / 1000;
+            }
+            loadVideo(data.currentBvid, true, estimatedSeconds);
+            // Also request precise sync from peers
+            wsSend({ type: 'sync_request' });
+          } else {
+            // Bilibili: estimate from server timestamp
+            let startSeconds = 0;
+            if (data.videoStartedAt && data.serverTime) {
+              startSeconds = (data.serverTime - data.videoStartedAt) / 1000;
+            }
+            loadVideo(data.currentBvid, true, startSeconds);
+            if (startSeconds > 0) {
+              addSystemMessage(`已同步进度到 ${formatTime(startSeconds)}`);
+            }
+          }
+          addSystemMessage(`正在播放: ${getDisplayUrl(video)}`);
         }
         toast(data.isHost ? '房间创建成功！' : '成功加入房间!');
         break;
 
       case 'video':
-        loadVideo(data.bvid, true);
+        // New video from someone, start from 0
+        loadVideo(data.bvid, true, 0);
         addSystemMessage(`视频已切换: ${data.bvid}`);
+        break;
+
+      case 'sync_request':
+        // Someone is asking for our current progress
+        {
+          const ytProgress = getYouTubeProgress();
+          if (ytProgress !== null) {
+            wsSend({
+              type: 'sync_reply',
+              target: data.from,
+              currentTime: ytProgress,
+              platform: 'youtube',
+            });
+          }
+        }
+        break;
+
+      case 'sync_reply':
+        // Got progress from a peer (YouTube only, first reply wins)
+        if (!state.syncAnswered && data.platform === 'youtube' && data.currentTime != null) {
+          state.syncAnswered = true;
+          log('Sync', `Got YouTube progress from peer: ${data.currentTime}s`);
+          if (state.ytPlayer && typeof state.ytPlayer.seekTo === 'function') {
+            state.ytPlayer.seekTo(data.currentTime, true);
+            addSystemMessage(`已同步YouTube进度到 ${formatTime(data.currentTime)}`);
+          }
+        }
         break;
 
       case 'danmaku':
@@ -1638,12 +1755,7 @@
         state.nickname = nick;
         els.nicknameInput.value = nick;
 
-        // Restore video from storage (will be overridden by server welcome)
-        const savedVideo = sessionStorage.getItem('yqk_video');
-        if (savedVideo) {
-          loadVideo(savedVideo, true);
-        }
-
+        // Don't load video here; server welcome will provide it with progress info
         connectRoom(roomId);
         els.welcomeOverlay.classList.add('hidden');
         toast('已恢复房间连接');
