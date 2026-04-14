@@ -231,6 +231,14 @@ export class Room {
         });
         break;
 
+      case 'emoji':
+        this.broadcastExcept(ws, {
+          type: 'emoji',
+          nick: meta.nickname,
+          key: data.key,
+        });
+        break;
+
       case 'nick_change': {
         const oldNick = meta.nickname;
         meta.nickname = data.nickname || '未知';

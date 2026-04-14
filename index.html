@@ -468,6 +468,58 @@
       color: var(--accent);
     }
 
+    /* ========== Emoji Picker ========== */
+    .emoji-btn-wrap {
+      position: relative;
+    }
+
+    .btn-emoji {
+      padding: 6px 8px;
+      border: none; background: none;
+      cursor: pointer; font-size: 1.1rem;
+      color: var(--text-secondary);
+      border-radius: 4px;
+      transition: background 0.15s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .btn-emoji:hover { background: var(--bg-input); color: var(--text-primary); }
+
+    .emoji-picker {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+      box-shadow: var(--shadow);
+      z-index: 100;
+      min-width: 220px;
+    }
+
+    .emoji-picker.hidden { display: none; }
+
+    .emoji-option {
+      width: 48px; height: 48px;
+      border: none; background: none;
+      border-radius: 6px;
+      cursor: pointer;
+      padding: 4px;
+      transition: background 0.15s, transform 0.1s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .emoji-option:hover { background: var(--bg-input); transform: scale(1.15); }
+    .emoji-option img { width: 100%; height: 100%; object-fit: contain; }
+
+    .chat-msg .emoji-img {
+      width: 48px; height: 48px;
+      vertical-align: middle;
+      display: inline-block;
+    }
+
     /* ========== Playlist ========== */
     .playlist-panel {
       display: flex; flex-direction: column;
@@ -883,6 +935,12 @@
             <span class="voice-users" id="voiceUsers"></span>
           </div>
           <div class="chat-input-bar">
+            <div class="emoji-btn-wrap">
+              <button class="btn-emoji" id="btnEmoji" title="表情">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+              </button>
+              <div class="emoji-picker hidden" id="emojiPicker"></div>
+            </div>
             <input type="text" id="chatInput" placeholder="发条消息..." maxlength="200">
             <button class="btn btn-primary btn-sm" id="btnSendChat">发送</button>
           </div>
@@ -1041,6 +1099,8 @@
     btnVoice: $('#btnVoice'),
     btnMute: $('#btnMute'),
     voiceUsers: $('#voiceUsers'),
+    btnEmoji: $('#btnEmoji'),
+    emojiPicker: $('#emojiPicker'),
     playlistItems: $('#playlistItems'),
     playlistAddInput: $('#playlistAddInput'),
     btnPlaylistAdd: $('#btnPlaylistAdd'),
@@ -1491,6 +1551,10 @@
         addChatMessage(data.nick, data.text);
         break;
 
+      case 'emoji':
+        addEmojiMessage(data.nick, data.key);
+        break;
+
       case 'members':
         updateMembersList(data.list);
         break;
@@ -1557,6 +1621,71 @@
     if (status === 'connected') dot.classList.add('connected');
     els.statusText.textContent = text;
   }
+
+  // ===== Emoji =====
+  const EMOJIS = [
+    { key: 'happy', file: 'emoji/表情套组_卫戍专用_happy.png' },
+    { key: 'sad', file: 'emoji/表情套组_卫戍专用_sad.png' },
+    { key: 'dying', file: 'emoji/表情套组_卫戍专用_dying.png' },
+    { key: 'scared', file: 'emoji/表情套组_卫戍专用_scared.png' },
+    { key: 'thinking', file: 'emoji/表情套组_卫戍专用_thinking.png' },
+    { key: 'playingcool', file: 'emoji/表情套组_卫戍专用_playingcool.png' },
+    { key: 'call', file: 'emoji/表情套组_卫戍专用_call.png' },
+    { key: 'respect', file: 'emoji/表情套组_卫戍专用_respect.png' },
+    { key: 'noproblem', file: 'emoji/表情套组_卫戍专用_noproblem.png' },
+    { key: 'thanks', file: 'emoji/表情套组_卫戍专用_thanks.png' },
+    { key: 'sorry', file: 'emoji/表情套组_卫戍专用_sorry.png' },
+    { key: 'cooperate', file: 'emoji/表情套组_卫戍专用_cooperate_2.png' },
+  ];
+
+  const EMOJI_MAP = {};
+  EMOJIS.forEach(e => { EMOJI_MAP[e.key] = e.file; });
+
+  function initEmojiPicker() {
+    const picker = els.emojiPicker;
+    picker.innerHTML = EMOJIS.map(e => `
+      <button class="emoji-option" data-key="${e.key}" title="${e.key}">
+        <img src="${e.file}" alt="${e.key}">
+      </button>
+    `).join('');
+
+    picker.querySelectorAll('.emoji-option').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.key;
+        sendEmoji(key);
+        picker.classList.add('hidden');
+      });
+    });
+  }
+
+  function toggleEmojiPicker() {
+    els.emojiPicker.classList.toggle('hidden');
+  }
+
+  function sendEmoji(key) {
+    addEmojiMessage(state.nickname, key);
+    wsSend({ type: 'emoji', key });
+  }
+
+  function addEmojiMessage(nick, key) {
+    const file = EMOJI_MAP[key];
+    if (!file) return;
+    const div = document.createElement('div');
+    div.className = 'chat-msg';
+    div.innerHTML = `<span class="nick">${escapeHtml(nick)}</span> <span class="text"><img class="emoji-img" src="${file}" alt="${key}"></span>`;
+    els.chatMessages.appendChild(div);
+    els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+  }
+
+  // Close emoji picker on outside click
+  document.addEventListener('click', (e) => {
+    if (!els.emojiPicker.classList.contains('hidden') &&
+        !els.emojiPicker.contains(e.target) &&
+        e.target !== els.btnEmoji &&
+        !els.btnEmoji.contains(e.target)) {
+      els.emojiPicker.classList.add('hidden');
+    }
+  });
 
   // ===== Playlist =====
   function renderPlaylist() {
@@ -1913,6 +2042,13 @@
     });
 
     // Check URL hash for room invitation
+    // Emoji
+    initEmojiPicker();
+    els.btnEmoji.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleEmojiPicker();
+    });
+
     // Playlist
     els.btnPlaylistAdd.addEventListener('click', addToPlaylist);
     els.playlistAddInput.addEventListener('keydown', (e) => {
