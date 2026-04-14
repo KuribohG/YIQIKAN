@@ -49,47 +49,76 @@ function corsHeaders() {
 export class Room {
   constructor(state, env) {
     this.state = state;
+    // In-memory state (will be restored from storage on wake)
     this.hostTag = null;
     this.currentBvid = '';
     this.videoStartedAt = 0;
-    this.playlist = [];      // [{ key, title, addedBy }]
-    this.playIndex = -1;     // current playing index in playlist
+    this.playlist = [];
+    this.playIndex = -1;
     this.counter = 0;
+    this._loaded = false;
+  }
+
+  // Restore state from storage (called on hibernation wake)
+  async _loadState() {
+    if (this._loaded) return;
+    this._loaded = true;
+    const stored = await this.state.storage.get(['currentBvid', 'videoStartedAt', 'playlist', 'playIndex', 'counter', 'hostTag']);
+    if (stored.get('currentBvid') !== undefined) this.currentBvid = stored.get('currentBvid');
+    if (stored.get('videoStartedAt') !== undefined) this.videoStartedAt = stored.get('videoStartedAt');
+    if (stored.get('playlist') !== undefined) this.playlist = stored.get('playlist');
+    if (stored.get('playIndex') !== undefined) this.playIndex = stored.get('playIndex');
+    if (stored.get('counter') !== undefined) this.counter = stored.get('counter');
+    if (stored.get('hostTag') !== undefined) this.hostTag = stored.get('hostTag');
+  }
+
+  // Persist state to storage
+  async _saveState() {
+    await this.state.storage.put({
+      currentBvid: this.currentBvid,
+      videoStartedAt: this.videoStartedAt,
+      playlist: this.playlist,
+      playIndex: this.playIndex,
+      counter: this.counter,
+      hostTag: this.hostTag,
+    });
   }
 
   async fetch(request) {
+    await this._loadState();
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     const tag = `u${++this.counter}`;
 
-    // Use Hibernation API: acceptWebSocket with tags
     this.state.acceptWebSocket(server, [tag]);
-
-    // Attach metadata via serializeAttachment
     server.serializeAttachment({ id: tag, nickname: '未知' });
 
-    // If first websocket, this user is host
     const allSockets = this.state.getWebSockets();
     if (allSockets.length === 1) {
       this.hostTag = tag;
     }
 
+    await this._saveState();
     return new Response(null, { status: 101, webSocket: client });
   }
 
   // --- Hibernation API event handlers ---
 
   async webSocketMessage(ws, message) {
+    await this._loadState();
     try {
       const data = JSON.parse(message);
-      this.handleMessage(ws, data);
+      await this.handleMessage(ws, data);
+      await this._saveState();
     } catch(e) {
       // ignore invalid JSON
     }
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
+    await this._loadState();
     const meta = ws.deserializeAttachment();
     ws.close(code, reason);
 
@@ -115,6 +144,7 @@ export class Room {
       }
 
       this.broadcastMemberList();
+      await this._saveState();
     }
   }
 
@@ -124,7 +154,7 @@ export class Room {
 
   // --- Message handling ---
 
-  handleMessage(ws, data) {
+  async handleMessage(ws, data) {
     const meta = ws.deserializeAttachment();
     if (!meta) return;
 
