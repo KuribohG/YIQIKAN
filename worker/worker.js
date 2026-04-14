@@ -51,7 +51,9 @@ export class Room {
     this.state = state;
     this.hostTag = null;
     this.currentBvid = '';
-    this.videoStartedAt = 0; // server timestamp (ms) when video started playing
+    this.videoStartedAt = 0;
+    this.playlist = [];      // [{ key, title, addedBy }]
+    this.playIndex = -1;     // current playing index in playlist
     this.counter = 0;
   }
 
@@ -138,6 +140,8 @@ export class Room {
           currentBvid: this.currentBvid,
           videoStartedAt: this.videoStartedAt,
           serverTime: Date.now(),
+          playlist: this.playlist,
+          playIndex: this.playIndex,
         });
 
         this.broadcastExcept(ws, {
@@ -209,6 +213,63 @@ export class Room {
         break;
       }
 
+      case 'playlist_add': {
+        // { key, title }
+        if (data.key) {
+          this.playlist.push({ key: data.key, title: data.title || data.key, addedBy: meta.nickname });
+          this.broadcastAll({ type: 'playlist_update', playlist: this.playlist, playIndex: this.playIndex });
+          this.broadcastAll({ type: 'chat_system', text: `${meta.nickname} 添加了: ${data.title || data.key}` });
+          // If nothing is playing, auto-play the first item
+          if (this.playIndex === -1) {
+            this.playIndex = 0;
+            this.playCurrentItem(meta);
+          }
+        }
+        break;
+      }
+
+      case 'playlist_remove': {
+        const idx = data.index;
+        if (idx >= 0 && idx < this.playlist.length) {
+          const removed = this.playlist.splice(idx, 1)[0];
+          // Adjust playIndex
+          if (idx < this.playIndex) {
+            this.playIndex--;
+          } else if (idx === this.playIndex) {
+            // Current song removed, play next (or stop)
+            if (this.playIndex >= this.playlist.length) this.playIndex = this.playlist.length - 1;
+            if (this.playIndex >= 0) {
+              this.playCurrentItem(meta);
+            } else {
+              this.currentBvid = '';
+              this.videoStartedAt = 0;
+            }
+          }
+          this.broadcastAll({ type: 'playlist_update', playlist: this.playlist, playIndex: this.playIndex });
+          this.broadcastAll({ type: 'chat_system', text: `${meta.nickname} 移除了: ${removed.title}` });
+        }
+        break;
+      }
+
+      case 'playlist_play': {
+        const idx = data.index;
+        if (idx >= 0 && idx < this.playlist.length) {
+          this.playIndex = idx;
+          this.playCurrentItem(meta);
+          this.broadcastAll({ type: 'playlist_update', playlist: this.playlist, playIndex: this.playIndex });
+        }
+        break;
+      }
+
+      case 'playlist_next': {
+        if (this.playIndex < this.playlist.length - 1) {
+          this.playIndex++;
+          this.playCurrentItem(meta);
+          this.broadcastAll({ type: 'playlist_update', playlist: this.playlist, playIndex: this.playIndex });
+        }
+        break;
+      }
+
       case 'ping':
         this.send(ws, { type: 'pong' });
         break;
@@ -241,6 +302,20 @@ export class Room {
           from: meta.id,
         });
         break;
+    }
+  }
+
+  playCurrentItem(meta) {
+    if (this.playIndex >= 0 && this.playIndex < this.playlist.length) {
+      const item = this.playlist[this.playIndex];
+      this.currentBvid = item.key;
+      this.videoStartedAt = Date.now();
+      this.broadcastAll({
+        type: 'video',
+        bvid: item.key,
+        videoStartedAt: this.videoStartedAt,
+        serverTime: Date.now(),
+      });
     }
   }
 
