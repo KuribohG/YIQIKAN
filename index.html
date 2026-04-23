@@ -468,6 +468,26 @@
       color: var(--accent);
     }
 
+    /* ========== Device Select ========== */
+    .device-select {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 0.82rem;
+      outline: none;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239a9aa0' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      cursor: pointer;
+    }
+    .device-select:focus { border-color: var(--accent); }
+    .device-select option { background: var(--bg-card); color: var(--text-primary); }
+
     /* ========== Live Stream ========== */
     .live-indicator {
       position: absolute; top: 12px; left: 12px;
@@ -1038,6 +1058,17 @@
               <h3>在线成员 (<span id="memberCount">0</span>)</h3>
               <div class="members-list" id="membersList"></div>
             </div>
+            <div class="room-section">
+              <h3>设备设置</h3>
+              <p>麦克风</p>
+              <select class="device-select" id="micSelect">
+                <option value="">默认</option>
+              </select>
+              <p>摄像头</p>
+              <select class="device-select" id="cameraSelect">
+                <option value="">默认</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -1165,6 +1196,8 @@
     btnVoice: $('#btnVoice'),
     btnMute: $('#btnMute'),
     voiceUsers: $('#voiceUsers'),
+    micSelect: $('#micSelect'),
+    cameraSelect: $('#cameraSelect'),
     liveVideo: $('#liveVideo'),
     liveIndicator: $('#liveIndicator'),
     btnLiveCamera: $('#btnLiveCamera'),
@@ -1715,6 +1748,49 @@
     els.statusText.textContent = text;
   }
 
+  // ===== Device Selection =====
+  async function refreshDeviceList() {
+    try {
+      // Need a temp stream to get device labels (browsers hide labels without permission)
+      let tempStream = null;
+      try {
+        tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch(e) {
+        try { tempStream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch(e2) {}
+      }
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+
+      // Mic
+      const mics = devices.filter(d => d.kind === 'audioinput');
+      const currentMic = els.micSelect.value;
+      els.micSelect.innerHTML = '<option value="">默认</option>' +
+        mics.map(d => `<option value="${d.deviceId}">${escapeHtml(d.label || '麦克风 ' + d.deviceId.slice(0,8))}</option>`).join('');
+      if (currentMic) els.micSelect.value = currentMic;
+
+      // Camera
+      const cameras = devices.filter(d => d.kind === 'videoinput');
+      const currentCam = els.cameraSelect.value;
+      els.cameraSelect.innerHTML = '<option value="">默认</option>' +
+        cameras.map(d => `<option value="${d.deviceId}">${escapeHtml(d.label || '摄像头 ' + d.deviceId.slice(0,8))}</option>`).join('');
+      if (currentCam) els.cameraSelect.value = currentCam;
+
+      if (tempStream) tempStream.getTracks().forEach(t => t.stop());
+    } catch(e) {
+      log('Devices', 'Failed to enumerate:', e);
+    }
+  }
+
+  function getSelectedAudioConstraints() {
+    const deviceId = els.micSelect.value;
+    return deviceId ? { deviceId: { exact: deviceId } } : true;
+  }
+
+  function getSelectedVideoConstraints() {
+    const deviceId = els.cameraSelect.value;
+    return deviceId ? { deviceId: { exact: deviceId } } : true;
+  }
+
   // ===== Live Stream =====
   const LIVE_RTC_CONFIG = {
     iceServers: [
@@ -1726,7 +1802,10 @@
   async function startLive(mode) {
     try {
       if (mode === 'camera') {
-        state.liveStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        state.liveStream = await navigator.mediaDevices.getUserMedia({
+          video: getSelectedVideoConstraints(),
+          audio: getSelectedAudioConstraints(),
+        });
       } else {
         // Get screen with system audio if available
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
@@ -1734,10 +1813,13 @@
           stopLive();
         });
 
-        // Also get microphone
+        // Also get microphone with selected device
         let micStream = null;
         try {
-          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: getSelectedAudioConstraints(),
+            video: false,
+          });
         } catch(e) {
           log('Live', 'Mic not available, screen-only:', e);
         }
@@ -2056,7 +2138,7 @@
 
   async function joinVoice() {
     try {
-      state.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      state.localStream = await navigator.mediaDevices.getUserMedia({ audio: getSelectedAudioConstraints(), video: false });
     } catch(e) {
       log('Voice', 'Mic access denied:', e);
       toast('无法访问麦克风', 'error');
@@ -2343,6 +2425,13 @@
 
     // Check URL hash for room invitation
     // Live stream
+    // Device selection - refresh list when Room tab is opened
+    $$('.sidebar-tab').forEach(tab => {
+      if (tab.dataset.tab === 'room') {
+        tab.addEventListener('click', refreshDeviceList);
+      }
+    });
+
     els.btnLiveCamera.addEventListener('click', () => startLive('camera'));
     els.btnLiveScreen.addEventListener('click', () => startLive('screen'));
     els.btnLiveStop.addEventListener('click', stopLive);
