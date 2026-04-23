@@ -1660,11 +1660,13 @@
         break;
 
       case 'rtc_offer':
+        log('RTC', 'offer received, purpose:', data.purpose, 'from:', data.from);
         if (data.purpose === 'live') { handleLiveOffer(data); }
         else { handleRtcOffer(data); }
         break;
 
       case 'rtc_answer':
+        log('RTC', 'answer received, purpose:', data.purpose, 'from:', data.from);
         if (data.purpose === 'live') { handleLiveAnswer(data); }
         else { handleRtcAnswer(data); }
         break;
@@ -1675,6 +1677,7 @@
         break;
 
       case 'live_start':
+        log('Live', 'Received live_start from:', data.from, 'mode:', data.mode);
         addSystemMessage(`${data.nickname} 开始了${data.mode === 'camera' ? '摄像头' : '屏幕'}直播`);
         toast(`${data.nickname} 开始了直播`);
         viewLive(data.from);
