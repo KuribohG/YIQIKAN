@@ -1728,11 +1728,33 @@
       if (mode === 'camera') {
         state.liveStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       } else {
-        state.liveStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        // If user cancels screen share, the track ends
-        state.liveStream.getVideoTracks()[0].addEventListener('ended', () => {
+        // Get screen with system audio if available
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        screenStream.getVideoTracks()[0].addEventListener('ended', () => {
           stopLive();
         });
+
+        // Also get microphone
+        let micStream = null;
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch(e) {
+          log('Live', 'Mic not available, screen-only:', e);
+        }
+
+        // Merge: screen video + system audio (if any) + mic audio
+        const tracks = [...screenStream.getVideoTracks()];
+        // Add system audio tracks from screen capture
+        screenStream.getAudioTracks().forEach(t => tracks.push(t));
+        // Add mic audio track
+        if (micStream) {
+          micStream.getAudioTracks().forEach(t => tracks.push(t));
+        }
+
+        state.liveStream = new MediaStream(tracks);
+        // Keep refs for cleanup
+        state._screenStream = screenStream;
+        state._micStream = micStream;
       }
     } catch(e) {
       log('Live', 'Failed to get media:', e);
@@ -1770,6 +1792,14 @@
     if (state.liveStream) {
       state.liveStream.getTracks().forEach(t => t.stop());
       state.liveStream = null;
+    }
+    if (state._screenStream) {
+      state._screenStream.getTracks().forEach(t => t.stop());
+      state._screenStream = null;
+    }
+    if (state._micStream) {
+      state._micStream.getTracks().forEach(t => t.stop());
+      state._micStream = null;
     }
 
     // Close all live peer connections
