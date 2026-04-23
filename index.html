@@ -945,7 +945,7 @@
           <div class="toggle-switch active" id="danmakuToggle"></div>
           弹幕
         </label>
-        <div class="live-controls" id="liveControls">
+        <div class="live-controls hidden" id="liveControls">
           <button class="btn-live" id="btnLiveCamera" title="摄像头直播">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
             摄像头
@@ -1549,6 +1549,8 @@
         state.sessionId = data.sessionId;
         state.isHost = data.isHost;
         log('WS', `Session: ${data.sessionId}, isHost: ${data.isHost}`);
+        // Only host can start live
+        els.liveControls.classList.toggle('hidden', !data.isHost);
         if (data.currentBvid) {
           const video = decodeVideoKey(data.currentBvid);
           if (video.platform === 'youtube') {
