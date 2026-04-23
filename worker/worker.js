@@ -340,6 +340,23 @@ export class Room {
           from: meta.id,
         });
         break;
+
+      // --- Live stream ---
+      case 'live_start':
+        this.broadcastExcept(ws, {
+          type: 'live_start',
+          from: meta.id,
+          nickname: meta.nickname,
+          mode: data.mode, // 'camera' or 'screen'
+        });
+        break;
+
+      case 'live_stop':
+        this.broadcastExcept(ws, {
+          type: 'live_stop',
+          from: meta.id,
+        });
+        break;
     }
   }
 
